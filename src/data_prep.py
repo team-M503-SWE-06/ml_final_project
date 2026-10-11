@@ -79,7 +79,18 @@ SOT_TO_M2 = 100.0            # 1 sot = 100 m²
 AZ_BBOX = (38.3, 41.95, 44.7, 50.7)   # lat_min, lat_max, lng_min, lng_max of Azerbaijan
 MIN_PRICE_AZN = 1_000        # below this a sale price is not credible (min in data: 11 AZN)
 MIN_BUILDING_AREA = 10.0     # m²; smaller "buildings" are data-entry errors
-OUTLIER_Q = (0.005, 0.995)   # price and per-category area quantile trim
+# Outlier limits are FIXED domain bounds, not data quantiles, so no statistic
+# from val/test rows decides which listings exist.
+PRICE_LIMITS_AZN = (10_000, 5_000_000)
+AREA_LIMITS_M2: dict[str, tuple[float, float]] = {
+    "new_build": (20, 500),
+    "old_build": (15, 300),
+    "house": (30, 1_500),
+    "land": (100, 200_000),        # 1 sot .. 20 ha
+    "commercial": (10, 10_000),
+    "office": (10, 10_000),
+    "garage": (10, 2_000),
+}
 MAX_MISSING_FRAC = 0.95      # drop columns that are almost entirely empty
 TOP_K_LOCATIONS = 30         # most frequent locations (train) kept, rest -> "other"
 MIN_LEVEL_COUNT = 30         # rarer category/district levels (train) -> "other"
@@ -220,20 +231,18 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
 
     # 4. outliers --------------------------------------------------------------
     # Prices are heavy-tailed (max 600M AZN); the extreme tails are mostly
-    # mis-typed prices. Trim the documented quantiles; area is trimmed within
-    # each category because land plots and flats live on different scales.
-    lo, hi = OUTLIER_Q
+    # mis-typed prices. Drop rows outside fixed, documented bounds; area bounds
+    # are per category because land plots and flats live on different scales.
+    p_lo, p_hi = PRICE_LIMITS_AZN
     n = len(df)
-    p_lo, p_hi = df["price"].quantile([lo, hi])
     df = df[df["price"].between(p_lo, p_hi)]
-    _log(f"price outside [{lo:.1%}, {hi:.1%}] quantiles = [{p_lo:,.0f}, {p_hi:,.0f}] AZN "
-         f"dropped: {n - len(df):,}")
+    _log(f"price outside fixed limits [{p_lo:,}, {p_hi:,}] AZN dropped: {n - len(df):,}")
 
     n = len(df)
-    a_lo = df.groupby("category")["area"].transform(lambda s: s.quantile(lo))
-    a_hi = df.groupby("category")["area"].transform(lambda s: s.quantile(hi))
+    a_lo = df["category"].map({k: v[0] for k, v in AREA_LIMITS_M2.items()}).fillna(0.0)
+    a_hi = df["category"].map({k: v[1] for k, v in AREA_LIMITS_M2.items()}).fillna(np.inf)
     df = df[(df["area"] >= a_lo) & (df["area"] <= a_hi)]
-    _log(f"area outside per-category [{lo:.1%}, {hi:.1%}] quantiles dropped: {n - len(df):,}")
+    _log(f"area outside fixed per-category limits (m²) {AREA_LIMITS_M2} dropped: {n - len(df):,}")
 
     # 5. columns ---------------------------------------------------------------
     drop = [c for c in LEAKAGE_COLUMNS if c in df]
