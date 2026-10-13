@@ -13,7 +13,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from src import data_prep
-from src.svm import PegasosSVM, RFFPegasosSVM
+from src.svm import PegasosSVM
+try:
+    from src.svm import RFFPegasosSVM
+except ImportError:         
+    RFFPegasosSVM = None
 from src import evaluate as ev
 from src.experiments.tree_sweeps import load_splits, save_csv
 
@@ -111,7 +115,9 @@ def main():
     best = max(lin, key=lambda r: r["val_f1"])          # VALIDATION only
     print("\nBEST linear (val F1): lambda =", best["lambda_"], round(best["val_f1"], 4))
     plot_loss(Xtr, ytr, best["lambda_"])
-
+    if RFFPegasosSVM is None:
+        print("RFFPegasosSVM not found in src/svm.py: skipping the RFF sweep.")
+        return
     rff = sweep_rff(Xtr, Xva, ytr, yva, best["lambda_"])
     save_csv(rff, "svm_rff_sweep.csv")
     best_r = max(rff, key=lambda r: r["val_f1"])
