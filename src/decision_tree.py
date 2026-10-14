@@ -208,6 +208,10 @@ class DecisionTree:
         self._check_params()
         X = np.asarray(X, dtype=float)
         y = np.asarray(y)
+        if y.ndim == 2 and y.shape[1] == 1:     # accept a column vector like sklearn
+            y = y.ravel()
+        if y.ndim != 1:
+            raise ValueError(f"y must be 1-D, got shape {y.shape}")
         if X.ndim != 2 or len(X) != len(y) or len(y) == 0:
             raise ValueError(f"expected X of shape (n, d) and y of length n, "
                              f"got X {X.shape} and y {y.shape}")
@@ -217,9 +221,13 @@ class DecisionTree:
             raise ValueError("X contains inf")
 
         if self.task == "classification":
+            if y.dtype.kind == "f" and np.isnan(y).any():
+                raise ValueError("y contains NaN labels")
             self.classes_, y = np.unique(y, return_inverse=True)   # labels -> 0..K-1
         else:
             y = y.astype(float)
+            if not np.isfinite(y).all():
+                raise ValueError("y contains NaN or inf")
         self.n_features_in_ = X.shape[1]
         self._n_train = len(y)
         self._importances = np.zeros(X.shape[1])
