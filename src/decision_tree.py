@@ -75,6 +75,10 @@ class DecisionTree:
         if self.criterion not in allowed:
             raise ValueError(f"criterion for {self.task} must be one of {allowed}, "
                              f"got {self.criterion!r}")
+        for name in ("max_depth", "min_samples_split", "min_samples_leaf"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, (int, np.integer)):
+                raise ValueError(f"{name} must be an integer, got {value!r}")
         if self.max_depth is not None and self.max_depth < 0:
             raise ValueError("max_depth must be None or >= 0")
         if self.min_samples_split < 2:
@@ -237,8 +241,14 @@ class DecisionTree:
         self.feature_importances_ = self._importances / total if total > 0 else self._importances
         return self
 
+    def _check_fitted(self) -> None:
+        if self.root is None:
+            raise RuntimeError("call fit first")
+
     def get_depth(self) -> int:
         """Length of the longest root-to-leaf path (a single leaf has depth 0)."""
+        self._check_fitted()
+
         def depth(node: Node) -> int:
             if node.is_leaf():
                 return 0
@@ -247,6 +257,8 @@ class DecisionTree:
 
     def get_n_leaves(self) -> int:
         """Number of leaves."""
+        self._check_fitted()
+
         def count(node: Node) -> int:
             if node.is_leaf():
                 return 1
@@ -260,8 +272,7 @@ class DecisionTree:
         its block of row indices with one comparison, so there is no Python
         loop over rows.
         """
-        if self.root is None:
-            raise RuntimeError("call fit before predict")
+        self._check_fitted()
         X = np.asarray(X, dtype=float)
         if X.ndim != 2 or X.shape[1] != self.n_features_in_:
             raise ValueError(f"expected X of shape (n, {self.n_features_in_}) as in fit, "
