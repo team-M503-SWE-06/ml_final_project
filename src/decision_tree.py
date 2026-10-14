@@ -61,6 +61,8 @@ class DecisionTree:
         self.root: Node | None = None
         self.classes_ = None      # original class labels (classification only)
         self._n_train = None      # rows seen by fit (weights min_impurity_decrease)
+        self._importances = None  # unnormalised total impurity decrease per feature
+        self.feature_importances_ = None
 
     def _check_params(self) -> None:
         if self.task == "classification":
@@ -195,6 +197,7 @@ class DecisionTree:
 
         go_left = X[:, feature] <= threshold
         node.feature, node.threshold = feature, threshold
+        self._importances[feature] += n * gain    # = N_t*I_t - N_left*I_left - N_right*I_right
         node.left = self._grow(X[go_left], y[go_left], depth + 1)
         node.right = self._grow(X[~go_left], y[~go_left], depth + 1)
         return node
@@ -215,8 +218,28 @@ class DecisionTree:
         else:
             y = y.astype(float)
         self._n_train = len(y)
+        self._importances = np.zeros(X.shape[1])
         self.root = self._grow(X, y, depth=0)
+
+        total = self._importances.sum()
+        self.feature_importances_ = self._importances / total if total > 0 else self._importances
         return self
+
+    def get_depth(self) -> int:
+        """Length of the longest root-to-leaf path (a single leaf has depth 0)."""
+        def depth(node: Node) -> int:
+            if node.is_leaf():
+                return 0
+            return 1 + max(depth(node.left), depth(node.right))
+        return depth(self.root)
+
+    def get_n_leaves(self) -> int:
+        """Number of leaves."""
+        def count(node: Node) -> int:
+            if node.is_leaf():
+                return 1
+            return count(node.left) + count(node.right)
+        return count(self.root)
 
     def _leaf_values(self, X):
         """
