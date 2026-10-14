@@ -164,8 +164,8 @@ class DecisionTree:
         feature, pos = np.unravel_index(np.argmax(gain.T), gain.T.shape)
 
         low, high = X_sorted[pos, feature], X_sorted[pos + 1, feature]
-        threshold = (low + high) / 2.0
-        if threshold == high:       # float rounding: keep `high` on the right side
+        threshold = low / 2.0 + high / 2.0      # (low + high) / 2 can overflow to inf
+        if threshold == high or not np.isfinite(threshold):   # keep `high` on the right side
             threshold = low
         return int(feature), float(threshold), float(gain[pos, feature])
 
@@ -213,6 +213,8 @@ class DecisionTree:
                              f"got X {X.shape} and y {y.shape}")
         if np.isnan(X).any():
             raise ValueError("X contains NaN: impute first (data_prep.impute_median)")
+        if np.isinf(X).any():
+            raise ValueError("X contains inf")
 
         if self.task == "classification":
             self.classes_, y = np.unique(y, return_inverse=True)   # labels -> 0..K-1
