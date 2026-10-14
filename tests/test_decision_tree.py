@@ -97,6 +97,77 @@ def test_random_data_matches_sklearn(criterion):
     assert np.allclose(ours.feature_importances_, make(0).fit(X, y).feature_importances_)
 
 
+def _noisy_data():
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(400, 4))
+    y = (X[:, 0] * X[:, 1] + rng.normal(scale=0.5, size=400) > 0).astype(int)
+    return X, y
+
+
+@pytest.mark.parametrize("param, value", [
+    ("max_depth", 3),
+    ("min_samples_split", 50),
+    ("min_samples_leaf", 20),
+    ("min_impurity_decrease", 0.01),
+])
+def test_each_stopping_parameter_changes_the_tree(param, value):
+    X, y = _noisy_data()
+    full = DecisionTree(criterion="gini").fit(X, y)
+    limited = DecisionTree(criterion="gini", **{param: value}).fit(X, y)
+    assert limited.get_n_leaves() < full.get_n_leaves()
+
+
+def test_stopping_parameters_are_respected():
+    X, y = _noisy_data()
+    tree = DecisionTree(criterion="entropy", max_depth=5, min_samples_leaf=7).fit(X, y)
+    assert tree.get_depth() <= 5
+    leaves = [n for n in _ours(tree) if n[0] is None]
+    assert min(n_samples for _, _, n_samples, _ in leaves) >= 7
+
+
+def test_predict_proba_and_labels():
+    X, y = _noisy_data()
+    labels = np.where(y == 1, "premium", "standard")
+    tree = DecisionTree(criterion="gini", max_depth=4).fit(X, labels)
+    proba = tree.predict_proba(X)
+    assert proba.shape == (len(X), 2)
+    assert np.allclose(proba.sum(axis=1), 1.0)
+    assert list(tree.classes_) == ["premium", "standard"]
+    assert (tree.predict(X) == tree.classes_[proba.argmax(axis=1)]).all()
+
+
+def test_regression_leaf_is_mean_and_fully_grown_tree_fits_train():
+    rng = np.random.default_rng(1)
+    X = rng.normal(size=(100, 3))
+    y = X[:, 0] + rng.normal(size=100)
+    stump = DecisionTree(task="regression", criterion="mse", max_depth=0).fit(X, y)
+    assert np.allclose(stump.predict(X), y.mean())
+    full = DecisionTree(task="regression", criterion="mse").fit(X, y)
+    assert np.allclose(full.predict(X), y)
+
+
+def test_feature_importances_sum_to_one():
+    X, y = _noisy_data()
+    tree = DecisionTree(criterion="gini", max_depth=6).fit(X, y)
+    assert tree.feature_importances_.shape == (X.shape[1],)
+    assert tree.feature_importances_.sum() == pytest.approx(1.0)
+    assert tree.feature_importances_[:2].sum() > tree.feature_importances_[2:].sum()
+
+
+def test_invalid_input_is_rejected():
+    X, y = _noisy_data()
+    with pytest.raises(ValueError):
+        DecisionTree(task="classification", criterion="mse").fit(X, y)
+    with pytest.raises(ValueError):
+        DecisionTree(min_samples_leaf=0).fit(X, y)
+    X_nan = X.copy()
+    X_nan[0, 0] = np.nan
+    with pytest.raises(ValueError):
+        DecisionTree().fit(X_nan, y)
+    with pytest.raises(AttributeError):
+        DecisionTree(task="regression", criterion="mse").fit(X, y.astype(float)).predict_proba(X)
+
+
 def test_impurity_values():
     gini = DecisionTree(criterion="gini")
     gini.classes_ = np.array([0, 1])
