@@ -60,6 +60,7 @@ class DecisionTree:
         self.random_state = random_state
         self.root: Node | None = None
         self.classes_ = None      # original class labels (classification only)
+        self.n_features_in_ = None  # number of columns seen by fit
         self._n_train = None      # rows seen by fit (weights min_impurity_decrease)
         self._importances = None  # unnormalised total impurity decrease per feature
         self.feature_importances_ = None
@@ -217,6 +218,7 @@ class DecisionTree:
             self.classes_, y = np.unique(y, return_inverse=True)   # labels -> 0..K-1
         else:
             y = y.astype(float)
+        self.n_features_in_ = X.shape[1]
         self._n_train = len(y)
         self._importances = np.zeros(X.shape[1])
         self.root = self._grow(X, y, depth=0)
@@ -251,6 +253,11 @@ class DecisionTree:
         if self.root is None:
             raise RuntimeError("call fit before predict")
         X = np.asarray(X, dtype=float)
+        if X.ndim != 2 or X.shape[1] != self.n_features_in_:
+            raise ValueError(f"expected X of shape (n, {self.n_features_in_}) as in fit, "
+                             f"got {X.shape}")
+        if np.isnan(X).any():   # NaN <= t is False, so NaN rows would silently go right
+            raise ValueError("X contains NaN: impute first (data_prep.impute_median)")
         if self.task == "classification":
             out = np.empty((len(X), len(self.classes_)))
         else:
