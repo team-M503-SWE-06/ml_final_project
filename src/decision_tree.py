@@ -90,7 +90,7 @@ class DecisionTree:
         if self.criterion == "gini":
             return 1.0 - np.sum(p ** 2, axis=-1)
         log_p = np.log2(np.where(p > 0, p, 1.0))   # 0 * log 0 is taken as 0
-        return -np.sum(p * log_p, axis=-1)
+        return 0.0 - np.sum(p * log_p, axis=-1)   # 0.0 - x avoids printing -0.0 for pure nodes
 
     def _impurity(self, y) -> float:
         """Gini / entropy of encoded labels (classification) or MSE around the mean (regression)."""
@@ -107,11 +107,62 @@ class DecisionTree:
 
     def _best_split(self, X, y):
         """
-        Search features & candidate thresholds; return the split that
-        maximizes impurity decrease (feature, threshold, decrease), or
-        None if no valid split improves things.
+        Search every feature and every candidate threshold of this node at once.
+
+        Each feature is sorted once; a threshold between sorted positions i and
+        i+1 sends the first i+1 rows left. Cumulative sums over the sorted rows
+        give the class counts (classification) or sum / sum of squares
+        (regression) of every left child in one pass, and the right child is
+        "node total minus left". So one node costs O(n log n * d), not O(n^2 * d).
+
+        Candidate thresholds are midpoints between consecutive DISTINCT values
+        (as in sklearn); positions that leave fewer than min_samples_leaf rows
+        on either side are invalid.
+
+        Returns (feature, threshold, gain) with gain = I(parent) - weighted
+        child impurity, or None if the node has no valid split. Ties go to the
+        lowest feature index, then the lowest threshold.
         """
-        raise NotImplementedError("TODO: best split search")
+        n, _ = X.shape
+        leaf = self.min_samples_leaf
+        if n < 2 * leaf:
+            return None
+
+        order = np.argsort(X, axis=0, kind="stable")       # (n, d)
+        X_sorted = np.take_along_axis(X, order, axis=0)
+        n_left = np.arange(1, n, dtype=float)[:, None]      # row i: rows 0..i go left
+        n_right = n - n_left
+
+        if self.task == "classification":
+            one_hot = np.eye(len(self.classes_))[y]           # (n, K)
+            left_counts = np.cumsum(one_hot[order], axis=0)[:-1]   # (n-1, d, K)
+            right_counts = one_hot.sum(axis=0) - left_counts
+            child = (n_left * self._impurity_from_counts(left_counts)
+                     + n_right * self._impurity_from_counts(right_counts)) / n
+        else:
+            y_c = y - y.mean()                  # centring keeps the sums numerically stable
+            y_sorted = y_c[order]
+            sum_left = np.cumsum(y_sorted, axis=0)[:-1]
+            sq_left = np.cumsum(y_sorted ** 2, axis=0)[:-1]
+            sum_right = y_c.sum() - sum_left
+            sq_right = np.sum(y_c ** 2) - sq_left
+            sse_left = sq_left - sum_left ** 2 / n_left       # sum of squared deviations
+            sse_right = sq_right - sum_right ** 2 / n_right
+            child = (sse_left + sse_right) / n
+
+        valid = X_sorted[1:] > X_sorted[:-1]                # threshold must separate two values
+        valid &= (n_left >= leaf) & (n_right >= leaf)
+        if not valid.any():
+            return None
+
+        gain = np.where(valid, self._impurity(y) - child, -np.inf)
+        feature, pos = np.unravel_index(np.argmax(gain.T), gain.T.shape)
+
+        low, high = X_sorted[pos, feature], X_sorted[pos + 1, feature]
+        threshold = (low + high) / 2.0
+        if threshold == high:       # float rounding: keep `high` on the right side
+            threshold = low
+        return int(feature), float(threshold), float(gain[pos, feature])
 
     # --- grow / predict -----------------------------------------------------
     def _grow(self, X, y, depth: int) -> Node:
