@@ -168,6 +168,59 @@ def test_invalid_input_is_rejected():
         DecisionTree(task="regression", criterion="mse").fit(X, y.astype(float)).predict_proba(X)
 
 
+def test_predict_rejects_input_that_does_not_match_fit():
+    X, y = _noisy_data()
+    tree = DecisionTree(criterion="gini", max_depth=3).fit(X, y)
+    with pytest.raises(ValueError):
+        tree.predict(X[:, :2])
+    with pytest.raises(ValueError):
+        tree.predict(np.column_stack([X, X[:, 0]]))
+    with pytest.raises(ValueError):
+        tree.predict(X[0])
+    X_nan = X[:3].copy()
+    X_nan[0, 1] = np.nan
+    with pytest.raises(ValueError):
+        tree.predict(X_nan)
+    assert tree.n_features_in_ == X.shape[1]
+    assert tree.predict(np.empty((0, X.shape[1]))).shape == (0,)
+
+
+def test_huge_values_do_not_overflow_the_threshold():
+    X = np.array([[1e308], [1.5e308], [1.6e308], [1.7e308]])
+    tree = DecisionTree(criterion="gini").fit(X, [0, 1, 0, 1])
+    assert np.isfinite(tree.root.threshold)
+    assert (tree.predict(X) == [0, 1, 0, 1]).all()
+    with pytest.raises(ValueError):
+        DecisionTree().fit(np.array([[-np.inf], [np.inf]]), [0, 1])
+
+
+def test_y_is_validated():
+    X, y = _noisy_data()
+    column = DecisionTree(criterion="gini", max_depth=3).fit(X, y[:, None])
+    flat = DecisionTree(criterion="gini", max_depth=3).fit(X, y)
+    assert (column.predict(X) == flat.predict(X)).all()
+    y_reg = X[:, 0].copy()
+    y_reg[0] = np.nan
+    with pytest.raises(ValueError):
+        DecisionTree(task="regression", criterion="mse").fit(X, y_reg)
+    with pytest.raises(ValueError):
+        DecisionTree().fit(X, np.where(y == 1, np.nan, 0.0))
+    with pytest.raises(ValueError):
+        DecisionTree().fit(X, np.column_stack([y, y]))
+
+
+def test_size_parameters_must_be_integers_and_queries_need_fit():
+    X, y = _noisy_data()
+    with pytest.raises(ValueError):
+        DecisionTree(max_depth=2.5).fit(X, y)
+    assert DecisionTree(max_depth=np.int64(2)).fit(X, y).get_depth() <= 2
+    for query in (DecisionTree().get_depth, DecisionTree().get_n_leaves):
+        with pytest.raises(RuntimeError):
+            query()
+    with pytest.raises(RuntimeError):
+        DecisionTree().predict(X)
+
+
 def test_impurity_values():
     gini = DecisionTree(criterion="gini")
     gini.classes_ = np.array([0, 1])
