@@ -218,12 +218,43 @@ class DecisionTree:
         self.root = self._grow(X, y, depth=0)
         return self
 
-    def _predict_one(self, x, node: Node):
-        raise NotImplementedError("TODO: traverse to a leaf")
+    def _leaf_values(self, X):
+        """
+        Route all rows down the tree together and return each row's leaf value.
+        Iterative (explicit stack) and vectorised per node: every node splits
+        its block of row indices with one comparison, so there is no Python
+        loop over rows.
+        """
+        if self.root is None:
+            raise RuntimeError("call fit before predict")
+        X = np.asarray(X, dtype=float)
+        if self.task == "classification":
+            out = np.empty((len(X), len(self.classes_)))
+        else:
+            out = np.empty(len(X))
+
+        stack = [(self.root, np.arange(len(X)))]
+        while stack:
+            node, rows = stack.pop()
+            if len(rows) == 0:
+                continue
+            if node.is_leaf():
+                out[rows] = node.value
+                continue
+            go_left = X[rows, node.feature] <= node.threshold
+            stack.append((node.left, rows[go_left]))
+            stack.append((node.right, rows[~go_left]))
+        return out
 
     def predict(self, X):
-        raise NotImplementedError("TODO: predict")
+        """Majority class of the leaf (classification) or the leaf mean (regression)."""
+        values = self._leaf_values(X)
+        if self.task == "classification":
+            return self.classes_[np.argmax(values, axis=1)]
+        return values
 
     def predict_proba(self, X):
-        """Classification only: return class probabilities from leaf counts."""
-        raise NotImplementedError("TODO: predict_proba (classification)")
+        """Classification only: class frequencies of the leaf, columns ordered as classes_."""
+        if self.task != "classification":
+            raise AttributeError("predict_proba is only available for classification")
+        return self._leaf_values(X)
