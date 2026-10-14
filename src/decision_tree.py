@@ -22,6 +22,7 @@ import numpy as np
 
 CLASSIFICATION_CRITERIA = ("gini", "entropy")
 REGRESSION_CRITERIA = ("mse",)
+EPSILON = np.finfo(float).eps   # tolerance for "pure node" and decrease comparisons
 
 
 class Node:
@@ -59,6 +60,7 @@ class DecisionTree:
         self.random_state = random_state
         self.root: Node | None = None
         self.classes_ = None      # original class labels (classification only)
+        self._n_train = None      # rows seen by fit (weights min_impurity_decrease)
 
     def _check_params(self) -> None:
         if self.task == "classification":
@@ -166,12 +168,53 @@ class DecisionTree:
 
     # --- grow / predict -----------------------------------------------------
     def _grow(self, X, y, depth: int) -> Node:
-        """Recursively build the tree, respecting the stopping rules."""
-        raise NotImplementedError("TODO: recursive grow")
+        """
+        Recursively build the tree. A node becomes a leaf when
+          - it reached max_depth,
+          - it has fewer than min_samples_split rows,
+          - it is pure (impurity 0),
+          - no threshold leaves min_samples_leaf rows on both sides, or
+          - the best split's weighted decrease (N_t / N) * gain is below
+            min_impurity_decrease (sklearn's definition, N = training rows).
+        """
+        n = len(y)
+        impurity = self._impurity(y)
+        node = Node(n_samples=n, impurity=impurity, value=self._leaf_value(y))
+
+        if self.max_depth is not None and depth >= self.max_depth:
+            return node
+        if n < self.min_samples_split or impurity <= EPSILON:
+            return node
+
+        split = self._best_split(X, y)
+        if split is None:
+            return node
+        feature, threshold, gain = split
+        if (n / self._n_train) * gain + EPSILON < self.min_impurity_decrease:
+            return node
+
+        go_left = X[:, feature] <= threshold
+        node.feature, node.threshold = feature, threshold
+        node.left = self._grow(X[go_left], y[go_left], depth + 1)
+        node.right = self._grow(X[~go_left], y[~go_left], depth + 1)
+        return node
 
     def fit(self, X, y):
+        """Build the tree from X (n_samples, n_features) and y. Returns self."""
+        self._check_params()
         X = np.asarray(X, dtype=float)
         y = np.asarray(y)
+        if X.ndim != 2 or len(X) != len(y) or len(y) == 0:
+            raise ValueError(f"expected X of shape (n, d) and y of length n, "
+                             f"got X {X.shape} and y {y.shape}")
+        if np.isnan(X).any():
+            raise ValueError("X contains NaN: impute first (data_prep.impute_median)")
+
+        if self.task == "classification":
+            self.classes_, y = np.unique(y, return_inverse=True)   # labels -> 0..K-1
+        else:
+            y = y.astype(float)
+        self._n_train = len(y)
         self.root = self._grow(X, y, depth=0)
         return self
 
