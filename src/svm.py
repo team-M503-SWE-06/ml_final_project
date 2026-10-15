@@ -175,7 +175,9 @@ class PegasosSVM:
             self.loss_history_.append(self._objective(X, y_pm1))
 
         self.w, self.b = w, float(b)
-        self.n_support_ = int(self.support_vector_mask(X, y).sum())
+        # computed on the X that was trained on (not via decision_function, so a
+        # subclass that maps X -> phi(X) in decision_function is not mapped twice)
+        self.n_support_ = int(np.sum(y_pm1 * (X @ w + b) <= 1.0))
         return self
 
     def decision_function(self, X) -> np.ndarray:
@@ -213,3 +215,76 @@ class PegasosSVM:
             raise ValueError(f"y has labels not seen in fit: {np.unique(y[unknown]).tolist()}")
         y_pm1 = np.where(y == self.classes_[1], 1.0, -1.0)
         return y_pm1 * scores <= 1.0
+
+
+class RFFPegasosSVM(PegasosSVM):
+    """
+    Non-linear SVM (Problem 3d, option ii): random Fourier features + linear Pegasos.
+
+    The RBF kernel k(x, x') = exp(-gamma * ||x - x'||^2) is approximated by an
+    explicit map (Rahimi & Recht, 2007)
+
+        phi(x) = sqrt(2 / D) * cos(W^T x + c),   W_jk ~ N(0, 2*gamma),  c_k ~ U(0, 2*pi)
+
+    so that phi(x) . phi(x') ~= k(x, x'), and the unchanged linear PegasosSVM is
+    trained on phi(X).
+
+    Why RFF and not kernelised Pegasos: kernel Pegasos keeps one alpha_i per
+    training row and needs K(x_i, x_j) against every row at each step, i.e.
+    O(n^2) kernel evaluations per epoch (~2e9 for our ~45k training rows) and
+    an O(n) cost per prediction. RFF costs O(n * D) per epoch, reuses the
+    tested linear solver as-is, and predicts in O(D).
+
+    W and c are drawn once in fit (seeded by random_state) and reused for
+    every later call. norm_w_ / margin_width_ / support vectors are measured
+    in the D-dimensional feature space.
+    """
+
+    def __init__(
+        self,
+        n_components: int = 500,
+        gamma: float = 0.01,
+        lambda_: float = 1e-4,
+        n_epochs: int = 10,
+        lr_schedule: str = "pegasos",
+        eta0: float = 0.01,
+        project: bool = True,
+        random_state: int = 42,
+    ):
+        super().__init__(lambda_=lambda_, n_epochs=n_epochs, lr_schedule=lr_schedule,
+                         eta0=eta0, project=project, random_state=random_state)
+        self.n_components = n_components
+        self.gamma = gamma
+        self.W_ = None          # (d, D) random frequencies
+        self.offset_ = None     # (D,)   random phases
+
+    def _features(self, X) -> np.ndarray:
+        """phi(X) = sqrt(2/D) * cos(X W + c)."""
+        return np.sqrt(2.0 / self.n_components) * np.cos(X @ self.W_ + self.offset_)
+
+    def _check_X(self, X) -> np.ndarray:
+        """Validate raw X against the fitted input width and return phi(X)."""
+        if self.W_ is None:
+            raise RuntimeError("RFFPegasosSVM is not fitted yet; call fit(X, y) first.")
+        X = np.asarray(X, dtype=float)
+        if X.ndim != 2 or X.shape[1] != self.W_.shape[0]:
+            raise ValueError(f"X must have shape (n, {self.W_.shape[0]}), got {X.shape}")
+        if not np.isfinite(X).all():
+            raise ValueError("X contains NaN or inf values")
+        return self._features(X)
+
+    def fit(self, X, y):
+        """Draw W, c, map X -> phi(X), then run the linear Pegasos fit on phi(X)."""
+        if not isinstance(self.n_components, (int, np.integer)) or isinstance(self.n_components, bool) \
+                or self.n_components < 1:
+            raise ValueError("n_components must be a positive integer")
+        if not self.gamma > 0:
+            raise ValueError("gamma must be > 0")
+        X = np.asarray(X, dtype=float)
+        if X.ndim != 2 or not np.isfinite(X).all():
+            raise ValueError("X must be a 2-D finite array without NaNs/infs (impute + standardize first)")
+
+        rng = np.random.default_rng(self.random_state)
+        self.W_ = rng.normal(0.0, np.sqrt(2.0 * self.gamma), size=(X.shape[1], self.n_components))
+        self.offset_ = rng.uniform(0.0, 2.0 * np.pi, size=self.n_components)
+        return super().fit(self._features(X), y)

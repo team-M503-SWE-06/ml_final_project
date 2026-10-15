@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from sklearn.linear_model import SGDClassifier
 
-from src.svm import PegasosSVM
+from src.svm import PegasosSVM, RFFPegasosSVM
 
 
 def _blobs(n=300, d=4, sep=1.5, seed=42):
@@ -136,3 +136,130 @@ def test_input_validation():
         m.predict(X[:, :2])
     with pytest.raises(ValueError):
         m.predict(Xn)
+
+
+# --- random Fourier features (Problem 3d) -----------------------------------
+def _circles(n=400, seed=0):
+    """Inner disc vs outer ring: not linearly separable."""
+    rng = np.random.default_rng(seed)
+    r = np.r_[rng.uniform(0.0, 1.0, n // 2), rng.uniform(2.0, 3.0, n - n // 2)]
+    t = rng.uniform(0.0, 2 * np.pi, n)
+    X = np.c_[r * np.cos(t), r * np.sin(t)]
+    y = np.r_[np.zeros(n // 2, int), np.ones(n - n // 2, int)]
+    return X, y
+
+
+def test_rff_approximates_rbf_kernel():
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(30, 5))
+    gamma = 0.2
+    m = RFFPegasosSVM(n_components=20_000, gamma=gamma, random_state=0)
+    m.fit(X, np.r_[np.zeros(15, int), np.ones(15, int)])
+    phi = m._features(X)
+    sq = ((X[:, None, :] - X[None, :, :]) ** 2).sum(-1)
+    assert np.abs(phi @ phi.T - np.exp(-gamma * sq)).max() < 0.05
+
+
+def test_rff_separates_circles_where_linear_cannot():
+    X, y = _circles()
+    lin = PegasosSVM(lambda_=1e-3, n_epochs=20, random_state=0).fit(X, y)
+    rff = RFFPegasosSVM(n_components=300, gamma=0.5, lambda_=1e-3, n_epochs=20,
+                        random_state=0).fit(X, y)
+    assert np.mean(lin.predict(X) == y) < 0.75
+    assert np.mean(rff.predict(X) == y) >= 0.95
+    assert set(np.unique(rff.predict(X))) <= {0, 1}
+
+
+def test_rff_margin_support_vectors_and_determinism():
+    X, y = _circles(seed=1)
+    a = RFFPegasosSVM(n_components=200, gamma=0.5, lambda_=1e-2, random_state=3).fit(X, y)
+    b = RFFPegasosSVM(n_components=200, gamma=0.5, lambda_=1e-2, random_state=3).fit(X, y)
+    assert np.array_equal(a.W_, b.W_) and np.array_equal(a.w, b.w)
+    assert a.w.shape == (200,)
+    assert np.isclose(a.margin_width_, 2 / np.linalg.norm(a.w))
+    mask = a.support_vector_mask(X, y)              # raw X, mapped once inside
+    assert mask.shape == (len(y),)
+    assert a.n_support_ == mask.sum()
+    assert len(a.loss_history_) == a.n_epochs and a.loss_history_[-1] < a.loss_history_[0]
+
+
+def test_rff_input_validation():
+    X, y = _circles(n=60, seed=2)
+    with pytest.raises(RuntimeError):
+        RFFPegasosSVM().predict(X)
+    with pytest.raises(ValueError):
+        RFFPegasosSVM(gamma=0).fit(X, y)
+    with pytest.raises(ValueError):
+        RFFPegasosSVM(n_components=0).fit(X, y)
+    Xn = X.copy(); Xn[0, 0] = np.nan
+    with pytest.raises(ValueError):
+        RFFPegasosSVM().fit(Xn, y)
+    m = RFFPegasosSVM(n_components=50, gamma=0.5).fit(X, y)
+    with pytest.raises(ValueError):
+        m.predict(np.c_[X, X])                      # wrong input width
+    with pytest.raises(ValueError):
+        m.predict(Xn)
+
+
+# --- random Fourier features (Problem 3d) -----------------------------------
+def _circles(n=400, seed=0):
+    """Inner disc vs outer ring: not linearly separable."""
+    rng = np.random.default_rng(seed)
+    r = np.r_[rng.uniform(0.0, 1.0, n // 2), rng.uniform(2.0, 3.0, n - n // 2)]
+    t = rng.uniform(0.0, 2 * np.pi, n)
+    X = np.c_[r * np.cos(t), r * np.sin(t)]
+    y = np.r_[np.zeros(n // 2, int), np.ones(n - n // 2, int)]
+    return X, y
+
+
+def test_rff_approximates_rbf_kernel():
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(30, 5))
+    gamma = 0.2
+    m = RFFPegasosSVM(n_components=20_000, gamma=gamma, random_state=0)
+    m.fit(X, np.r_[np.zeros(15, int), np.ones(15, int)])
+    phi = m._features(X)
+    sq = ((X[:, None, :] - X[None, :, :]) ** 2).sum(-1)
+    assert np.abs(phi @ phi.T - np.exp(-gamma * sq)).max() < 0.05
+
+
+def test_rff_separates_circles_where_linear_cannot():
+    X, y = _circles()
+    lin = PegasosSVM(lambda_=1e-3, n_epochs=20, random_state=0).fit(X, y)
+    rff = RFFPegasosSVM(n_components=300, gamma=0.5, lambda_=1e-3, n_epochs=20,
+                        random_state=0).fit(X, y)
+    assert np.mean(lin.predict(X) == y) < 0.75
+    assert np.mean(rff.predict(X) == y) >= 0.95
+    assert set(np.unique(rff.predict(X))) <= {0, 1}
+
+
+def test_rff_margin_support_vectors_and_determinism():
+    X, y = _circles(seed=1)
+    a = RFFPegasosSVM(n_components=200, gamma=0.5, lambda_=1e-2, random_state=3).fit(X, y)
+    b = RFFPegasosSVM(n_components=200, gamma=0.5, lambda_=1e-2, random_state=3).fit(X, y)
+    assert np.array_equal(a.W_, b.W_) and np.array_equal(a.w, b.w)
+    assert a.w.shape == (200,)
+    assert np.isclose(a.margin_width_, 2 / np.linalg.norm(a.w))
+    mask = a.support_vector_mask(X, y)              # raw X, mapped once inside
+    assert mask.shape == (len(y),)
+    assert a.n_support_ == mask.sum()
+    assert len(a.loss_history_) == a.n_epochs and a.loss_history_[-1] < a.loss_history_[0]
+
+
+def test_rff_input_validation():
+    X, y = _circles(n=60, seed=2)
+    with pytest.raises(RuntimeError):
+        RFFPegasosSVM().predict(X)
+    with pytest.raises(ValueError):
+        RFFPegasosSVM(gamma=0).fit(X, y)
+    with pytest.raises(ValueError):
+        RFFPegasosSVM(n_components=0).fit(X, y)
+    Xn = X.copy(); Xn[0, 0] = np.nan
+    with pytest.raises(ValueError):
+        RFFPegasosSVM().fit(Xn, y)
+    m = RFFPegasosSVM(n_components=50, gamma=0.5).fit(X, y)
+    with pytest.raises(ValueError):
+        m.predict(np.c_[X, X])                      # wrong input width
+    with pytest.raises(ValueError):
+        m.predict(Xn)
+
