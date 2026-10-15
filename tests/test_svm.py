@@ -125,6 +125,12 @@ def test_input_validation():
         PegasosSVM(n_epochs=2.5).fit(X, y)
     with pytest.raises(ValueError):
         PegasosSVM(lr_schedule="adam").fit(X, y)
+    with pytest.raises(ValueError):
+        PegasosSVM(lambda_=0.5, lr_schedule="constant", eta0=2.0).fit(X, y)   # eta0 * lambda >= 1
+    with pytest.raises(ValueError):
+        PegasosSVM(lr_schedule="invsqrt", eta0=0.0).fit(X, y)
+    with pytest.raises(ValueError):
+        PegasosSVM().fit(X, y[:-1])                                          # X and y lengths differ
     Xn = X.copy(); Xn[0, 0] = np.nan
     with pytest.raises(ValueError):
         PegasosSVM().fit(Xn, y)
