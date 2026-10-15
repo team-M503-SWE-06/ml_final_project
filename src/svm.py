@@ -1,29 +1,16 @@
 """
-svm.py — a soft-margin SVM built FROM SCRATCH via PEGASOS (NumPy only).
+svm.py — linear soft-margin SVM trained with Pegasos, from scratch (NumPy only).
 
-You do NOT need a QP / SMO solver. Pegasos minimises the regularised
-hinge-loss primal by stochastic sub-gradient descent:
+PegasosSVM minimises the regularised hinge-loss primal by stochastic
+sub-gradient descent (Shalev-Shwartz et al., 2011), so no QP / SMO solver is
+needed. Any two class labels are accepted: they are mapped to {-1, +1} for
+training and mapped back in predict. The class docstring gives the exact
+objective (the bias is regularised as a constant-1 feature) and fit() the
+update rule; the objective is recorded after every epoch in loss_history_.
 
-    J(w, b) = (lambda/2) * ||w||^2
-              + (1/n) * sum_i  max(0, 1 - y_i (w . x_i + b))
-
-with labels y_i in {-1, +1}. Per-step update with learning rate
-eta_t = 1 / (lambda * t):
-
-    if  y_i (w . x_i + b) < 1:
-        w <- (1 - eta_t*lambda) w + eta_t*y_i*x_i      (hinge active)
-    else:
-        w <- (1 - eta_t*lambda) w                      (only regularise)
-
-(Handle b with its own sub-gradient step; many implementations fold a bias
-feature into x instead — your choice, just be consistent.)
-
-Non-linear extension (pick ONE and justify it in the report):
-  - kernelised Pegasos (keep per-sample coefficients alpha_i), OR
-  - random Fourier features (map X -> phi(X), then run LINEAR Pegasos).
-
-scikit-learn's SVC is a BASELINE only — not allowed inside this class.
-Remember to STANDARDIZE features (see data_prep.standardize) before training.
+Inputs must be imputed and standardized with TRAIN statistics first
+(data_prep.impute_median, data_prep.standardize): the hinge loss is
+scale-sensitive. scikit-learn is used only for baselines elsewhere, never here.
 """
 
 from __future__ import annotations
