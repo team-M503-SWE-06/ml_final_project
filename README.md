@@ -61,3 +61,10 @@ pip install -r requirements.txt
 # put the dataset in data/ (see data/README.md), then:
 python -m src.run_all
 ```
+
+## Tests
+```bash
+python -m pytest -q
+```
+The tree tests compare our splits node by node with scikit-learn on small
+examples that have no tied splits.
