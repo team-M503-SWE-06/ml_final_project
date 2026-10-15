@@ -120,13 +120,70 @@ Describe your impurity criteria (Gini / entropy / MSE reduction), the
 split search, recursion, leaf rule, and hyperparameters.
 
 \subsection{Support-vector machine (from scratch)}
-State the objective and the Pegasos update you implemented:
+\textit{Objective.} For Task~B we train a linear soft-margin SVM
+(\texttt{PegasosSVM} in \texttt{src/svm.py}, NumPy only) on labels
+$y_i\in\{-1,+1\}$ (any two class labels are mapped and mapped back). It
+minimises the regularised hinge-loss primal
 \begin{equation}
-  J(\mathbf{w},b)=\tfrac{\lambda}{2}\lVert\mathbf{w}\rVert^{2}
+  J(\mathbf{w},b)=\tfrac{\lambda}{2}\big(\lVert\mathbf{w}\rVert^{2}+b^{2}\big)
   +\tfrac{1}{n}\sum_{i=1}^{n}\max\!\big(0,\,1-y_i(\mathbf{w}^{\top}\mathbf{x}_i+b)\big).
+  \label{eq:svm}
 \end{equation}
-Explain the learning-rate schedule, feature scaling, and your non-linear
-extension (kernelised Pegasos or random Fourier features), if any.
+Following the Pegasos box, the bias is the weight of a constant-1 feature,
+so it is shrunk like $\mathbf{w}$; this adds the $b^{2}$ term, which is
+negligible on standardized features and stops the large first steps
+($\eta_1=1/\lambda$) from inflating $b$.
+
+\textit{Solver.} Pegasos~\cite{pegasos}: each epoch visits a fresh random
+permutation of the rows in mini-batches $A_t$ of size $k$ and applies
+\begin{equation}
+  \mathbf{w}\leftarrow(1-\eta_t\lambda)\,\mathbf{w}
+  +\frac{\eta_t}{k}\sum_{i\in A_t^{+}} y_i\mathbf{x}_i,
+  \quad A_t^{+}=\{i\in A_t: y_i(\mathbf{w}^{\top}\mathbf{x}_i+b)<1\},
+\end{equation}
+with the same rule for $b$, followed by an optional projection of
+$(\mathbf{w},b)$ onto the ball of radius $1/\sqrt{\lambda}$. $k=1$ is the
+classic per-example update (our default); $k=n$ is the full-batch
+sub-gradient method. Mini-batches replace a Python step per row with one
+vectorised step per batch; $k=1$ keeps a scalar path and gives
+bit-identical results to the per-example solver. The objective
+\eqref{eq:svm} is recorded after every epoch.
+
+\textit{Hyperparameters.} We expose $\lambda$ (equivalently
+$C=1/(\lambda n)$), the number of epochs, the batch size, and three
+learning-rate schedules: Pegasos $\eta_t=1/(\lambda t)$, inverse square
+root $\eta_t=\eta_0/\sqrt{t}$, and constant $\eta_t=\eta_0$ (we require
+$\eta_0\lambda<1$ so the shrink factor stays positive). Features are
+imputed and standardized with training statistics only, since the hinge
+loss is scale-sensitive.
+
+\textit{Margin.} After fitting we report $\lVert\mathbf{w}\rVert$, the
+margin width $2/\lVert\mathbf{w}\rVert$, and the support vectors, i.e.\
+the training points with $y_i(\mathbf{w}^{\top}\mathbf{x}_i+b)\le 1$.
+
+\textit{Non-linearity: random Fourier features.} \texttt{RFFPegasosSVM}
+approximates the RBF kernel $k(\mathbf{x},\mathbf{x}')=
+\exp(-\gamma\lVert\mathbf{x}-\mathbf{x}'\rVert^{2})$ with
+$\boldsymbol{\phi}(\mathbf{x})=\sqrt{2/D}\cos(W^{\top}\mathbf{x}+\mathbf{c})$,
+$W_{jk}\sim\mathcal{N}(0,2\gamma)$, $c_k\sim\mathcal{U}(0,2\pi)$~\cite{rff},
+so $\boldsymbol{\phi}(\mathbf{x})^{\top}\boldsymbol{\phi}(\mathbf{x}')\approx
+k(\mathbf{x},\mathbf{x}')$, and trains the unchanged linear solver on
+$\boldsymbol{\phi}(X)$ ($D=500$). We chose RFF over kernelised Pegasos
+because the kernel version keeps one coefficient per training row and
+needs kernel evaluations against all of them at every step: $O(n^{2})$
+per epoch (about $2\times10^{9}$ for our $\approx$45k training rows) and
+$O(n)$ per prediction. RFF costs $O(nD)$ per epoch, predicts in $O(D)$,
+and reuses the tested linear code. One consequence: since
+$\lVert\boldsymbol{\phi}(\mathbf{x})\rVert^{2}\approx 1$ while a
+standardized $\mathbf{x}$ has $\lVert\mathbf{x}\rVert^{2}\approx 71$, the
+RFF model needs its own (smaller) $\lambda$.
+
+\textit{Tests.} \texttt{tests/test\_svm.py} checks the label mapping,
+determinism, a decreasing objective, the margin and support-vector
+definitions, a closed-form full-batch first step, that RFF approximates
+the RBF Gram matrix and separates concentric circles where the linear
+model cannot, and agreement with scikit-learn's
+\texttt{SGDClassifier(loss="hinge")} on a toy split.
 
 \section{Experimental Setup}
 Metrics (RMSE/MAE/$R^2$ for regression; precision/recall/F1/AUC for
@@ -161,6 +218,63 @@ Lead with a results table; back every claim with a number or figure.
   \label{fig:main}
 \end{figure}
 
+\subsection{SVM: weights, schedule and gap to scikit-learn}
+All numbers in this subsection are on the validation set
+(\texttt{python -m src.experiments.svm\_analysis}, $\lambda=10^{-3}$, the
+best linear $\lambda$ by validation F1).
+
+\textit{Weights.} On standardized features the largest positive
+(premium) weights are \texttt{rooms} (+1.65) and \texttt{area} (+1.33),
+then central Baku locations (Sabail district +0.54, the Shah Ismail
+Khatai and Ag Sheher areas) and the new-build category (+0.44).
+The most negative are Khachmaz district ($-0.64$), the land category
+($-0.44$), Absheron and Surakhani districts, and the old-build
+category. Because \texttt{rooms} and \texttt{area}
+are correlated, and the one-hot blocks are collinear with the bias,
+these are conditional effects that split credit between related
+features, not independent importances.
+
+\textit{Epochs and schedule.} With the Pegasos schedule the objective
+falls from 0.556 after one epoch to 0.389 after 20, and the margin
+$2/\lVert\mathbf{w}\rVert$ widens from 0.41 to 0.74 while validation F1
+rises from 0.811 to 0.841. $\eta_t=\eta_0/\sqrt{t}$ ($\eta_0=0.5$)
+converges fastest (0.399 after one epoch). A constant step
+($\eta_0=0.01$) stalls at $J\approx0.45$ with a narrower margin
+($\approx0.56$) and F1 0.82--0.83: without a decaying step, SGD keeps
+bouncing at its noise level.
+
+\begin{table}[t]
+  \centering
+  \caption{Linear SVM vs.\ scikit-learn with matched regularisation
+  ($\alpha=\lambda$, $C=1/(\lambda n)$), same standardized features,
+  validation set. $J$ is the textbook objective (bias not regularised)
+  on the training set.}
+  \label{tab:svm_sklearn}
+  \setlength{\tabcolsep}{3pt}
+  \begin{tabular}{@{}lcccccc@{}}
+    \toprule
+    Model & F1 & AUC & $J$ & margin & fit (s) & agree \\
+    \midrule
+    Ours (Pegasos)            & 0.841 & 0.917 & 0.395 & 0.705 & 2.77 & --- \\
+    SGDClassifier (hinge)     & 0.840 & 0.921 & 0.387 & 0.737 & 0.35 & 95.4\% \\
+    LinearSVC (hinge)         & 0.840 & 0.921 & 0.383 & 0.771 & 1.03 & 95.9\% \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\textit{Gap to scikit-learn.} Table~\ref{tab:svm_sklearn}: LinearSVC
+solves the same problem to (near) optimality, and our objective is about
+3\% above it after 10 epochs; the weight vectors point the same way
+(cosine similarity 0.994) and 95.9\% of validation predictions agree.
+F1 is the same to within 0.002; AUC is about 0.005 lower. The gap comes from
+(i) a stochastic solver stopped after 10 epochs, whose $1/(\lambda t)$
+step is still noisy, (ii) regularising the bias, which LinearSVC also
+does but SGDClassifier does not, and (iii) the projection step. Ours is
+the slowest because the per-example update is a Python loop while
+scikit-learn's solvers are compiled; mini-batches of 256 cut our fit to
+about 0.3\,s (10 epochs) and, with 50 epochs, match the per-example F1
+with AUC 0.921.
+
 \section{Discussion and Limitations}
 Where and why each model fails (luxury outliers, sparse districts,
 scaling effects), the bias--variance story, and honest limitations.
@@ -178,6 +292,10 @@ you built on. (Required.)
 S.~Shalev-Shwartz, Y.~Singer, N.~Srebro, and A.~Cotter,
 ``Pegasos: primal estimated sub-gradient solver for SVM,''
 \emph{Mathematical Programming}, vol.~127, no.~1, pp.~3--30, 2011.
+\bibitem{rff}
+A.~Rahimi and B.~Recht,
+``Random features for large-scale kernel machines,''
+in \emph{Advances in Neural Information Processing Systems 20}, 2007.
 \end{thebibliography}
 
 \end{document}
