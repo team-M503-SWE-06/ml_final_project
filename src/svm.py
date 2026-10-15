@@ -138,8 +138,12 @@ class PegasosSVM:
         self.w, self.b = w, float(b)
         return self
 
-    def decision_function(self, X):
-        raise NotImplementedError("TODO: decision_function")
+    def decision_function(self, X) -> np.ndarray:
+        """Return the signed score  w . x + b  for each row."""
+        X = np.asarray(X, dtype=float)
+        return X @ self.w + self.b
 
-    def predict(self, X):
-        raise NotImplementedError("TODO: predict")
+    def predict(self, X) -> np.ndarray:
+        """Map sign(w.x + b) back to the original labels (score 0 -> positive class)."""
+        scores = self.decision_function(X)
+        return np.where(scores >= 0.0, self.classes_[1], self.classes_[0])
