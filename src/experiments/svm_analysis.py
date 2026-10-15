@@ -1,4 +1,4 @@
-"""svm_analysis.py: Dev 3. SVM weights, hyperparameter effects and the gap to scikit-learn.
+"""svm_analysis.py: SVM weights, hyperparameter effects and the gap to scikit-learn.
 
 Run from repo root:  python -m src.experiments.svm_analysis
 
