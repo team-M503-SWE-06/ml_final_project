@@ -66,6 +66,7 @@ class PegasosSVM:
         eta0: float = 0.01,
         project: bool = True,
         random_state: int = 42,
+        batch_size: int = 1,
     ):
         self.lambda_ = lambda_
         self.n_epochs = n_epochs
@@ -73,6 +74,7 @@ class PegasosSVM:
         self.eta0 = eta0
         self.project = project
         self.random_state = random_state
+        self.batch_size = batch_size
 
         self.w = None
         self.b = 0.0
@@ -119,13 +121,18 @@ class PegasosSVM:
 
     def fit(self, X, y):
         """
-        Run Pegasos for ``n_epochs`` shuffled passes (one example per step):
+        Run Pegasos for ``n_epochs`` shuffled passes over mini-batches A_t of
+        ``batch_size`` rows (k = |A_t|, A_t+ = rows of A_t with y_i (w.x_i + b) < 1):
 
             eta_t = schedule(t)
-            if y_i (w.x_i + b) < 1:  w <- (1 - eta_t*lambda) w + eta_t*y_i*x_i
-            else:                    w <- (1 - eta_t*lambda) w
+            w <- (1 - eta_t*lambda) w + (eta_t / k) * sum_{i in A_t+} y_i x_i
             (same rule for b, see class docstring)
             optional: project (w, b) onto ||.|| <= 1/sqrt(lambda)
+
+        batch_size=1 is the classic one-example update; batch_size >= n is the
+        full-batch sub-gradient method. Larger batches mean fewer (but averaged)
+        steps per epoch: one vectorised NumPy op per batch instead of a Python
+        step per row.
 
         The objective J is recorded after every epoch in ``loss_history_``.
         Return self.
@@ -134,6 +141,9 @@ class PegasosSVM:
             raise ValueError("lambda_ must be > 0")
         if not isinstance(self.n_epochs, (int, np.integer)) or isinstance(self.n_epochs, bool) or self.n_epochs < 1:
             raise ValueError("n_epochs must be a positive integer")
+        if not isinstance(self.batch_size, (int, np.integer)) or isinstance(self.batch_size, bool) \
+                or self.batch_size < 1:
+            raise ValueError("batch_size must be a positive integer")
         if self.lr_schedule not in LR_SCHEDULES:
             raise ValueError(f"lr_schedule must be one of {LR_SCHEDULES}")
         if self.lr_schedule != "pegasos" and (self.eta0 <= 0 or self.eta0 * self.lambda_ >= 1):
@@ -147,6 +157,7 @@ class PegasosSVM:
             raise ValueError("X and y have different lengths")
 
         n, d = X.shape
+        k = min(int(self.batch_size), n)
         w = np.zeros(d)
         b = 0.0
         radius = 1.0 / np.sqrt(self.lambda_)
@@ -154,23 +165,44 @@ class PegasosSVM:
         self.loss_history_ = []
 
         t = 0
+        lam = self.lambda_
         for _ in range(self.n_epochs):
-            for i in rng.permutation(n):
-                t += 1
-                eta = self._eta(t)
-                shrink = 1.0 - eta * self.lambda_
-                xi, yi = X[i], y_pm1[i]
-                active = yi * (xi @ w + b) < 1.0
-                w *= shrink
-                b *= shrink
-                if active:
-                    w += eta * yi * xi
-                    b += eta * yi
-                if self.project:
-                    norm = np.sqrt(w @ w + b * b)
-                    if norm > radius:
-                        w *= radius / norm
-                        b *= radius / norm
+            order = rng.permutation(n)
+            if k == 1:
+                # scalar path: indexing a 1-row batch costs more than the update itself
+                for i in order:
+                    t += 1
+                    eta = self._eta(t)
+                    xi, yi = X[i], y_pm1[i]
+                    active = yi * (xi @ w + b) < 1.0
+                    w *= 1.0 - eta * lam
+                    b *= 1.0 - eta * lam
+                    if active:
+                        w += eta * yi * xi
+                        b += eta * yi
+                    if self.project:
+                        norm = np.sqrt(w @ w + b * b)
+                        if norm > radius:
+                            w *= radius / norm
+                            b *= radius / norm
+            else:
+                for start in range(0, n, k):
+                    idx = order[start:start + k]
+                    t += 1
+                    eta = self._eta(t)
+                    Xb, yb = X[idx], y_pm1[idx]
+                    active = yb * (Xb @ w + b) < 1.0
+                    w *= 1.0 - eta * lam
+                    b *= 1.0 - eta * lam
+                    if active.any():
+                        step = eta / len(idx)
+                        w += step * (yb[active] @ Xb[active])
+                        b += step * yb[active].sum()
+                    if self.project:
+                        norm = np.sqrt(w @ w + b * b)
+                        if norm > radius:
+                            w *= radius / norm
+                            b *= radius / norm
             self.w, self.b = w, float(b)
             self.loss_history_.append(self._objective(X, y_pm1))
 
@@ -250,9 +282,11 @@ class RFFPegasosSVM(PegasosSVM):
         eta0: float = 0.01,
         project: bool = True,
         random_state: int = 42,
+        batch_size: int = 1,
     ):
         super().__init__(lambda_=lambda_, n_epochs=n_epochs, lr_schedule=lr_schedule,
-                         eta0=eta0, project=project, random_state=random_state)
+                         eta0=eta0, project=project, random_state=random_state,
+                         batch_size=batch_size)
         self.n_components = n_components
         self.gamma = gamma
         self.W_ = None          # (d, D) random frequencies
