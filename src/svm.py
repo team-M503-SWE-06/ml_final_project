@@ -60,6 +60,7 @@ class PegasosSVM:
         project: bool = True,
         random_state: int = 42,
         batch_size: int = 1,
+        average: bool = True,
     ):
         self.lambda_ = lambda_
         self.n_epochs = n_epochs
@@ -68,6 +69,7 @@ class PegasosSVM:
         self.project = project
         self.random_state = random_state
         self.batch_size = batch_size
+        self.average = average
 
         self.w = None
         self.b = 0.0
@@ -127,7 +129,13 @@ class PegasosSVM:
         steps per epoch: one vectorised NumPy op per batch instead of a Python
         step per row.
 
-        The objective J is recorded after every epoch in ``loss_history_``.
+        average=True (default) returns the mean of the iterates over the final
+        epoch instead of the last iterate (tail averaging, as in Pegasos / ASGD).
+        The last SGD iterate still carries step noise; averaging removes most of
+        it for one vector add per step.
+
+        The objective J is recorded after every epoch in ``loss_history_``; with
+        average=True the last entry is J of the returned (averaged) weights.
         Return self.
         """
         if self.lambda_ <= 0:
@@ -159,8 +167,10 @@ class PegasosSVM:
 
         t = 0
         lam = self.lambda_
-        for _ in range(self.n_epochs):
+        for epoch in range(self.n_epochs):
             order = rng.permutation(n)
+            averaging = self.average and epoch == self.n_epochs - 1
+            w_sum, b_sum, n_avg = np.zeros(d), 0.0, 0
             if k == 1:
                 # scalar path: indexing a 1-row batch costs more than the update itself
                 for i in order:
@@ -178,6 +188,10 @@ class PegasosSVM:
                         if norm > radius:
                             w *= radius / norm
                             b *= radius / norm
+                    if averaging:
+                        w_sum += w
+                        b_sum += b
+                        n_avg += 1
             else:
                 for start in range(0, n, k):
                     idx = order[start:start + k]
@@ -196,6 +210,12 @@ class PegasosSVM:
                         if norm > radius:
                             w *= radius / norm
                             b *= radius / norm
+                    if averaging:
+                        w_sum += w
+                        b_sum += b
+                        n_avg += 1
+            if averaging:                       # returned model = mean iterate of the last epoch
+                w, b = w_sum / n_avg, b_sum / n_avg
             self.w, self.b = w, float(b)
             self.loss_history_.append(self._objective(X, y_pm1))
 
@@ -276,10 +296,11 @@ class RFFPegasosSVM(PegasosSVM):
         project: bool = True,
         random_state: int = 42,
         batch_size: int = 1,
+        average: bool = True,
     ):
         super().__init__(lambda_=lambda_, n_epochs=n_epochs, lr_schedule=lr_schedule,
                          eta0=eta0, project=project, random_state=random_state,
-                         batch_size=batch_size)
+                         batch_size=batch_size, average=average)
         self.n_components = n_components
         self.gamma = gamma
         self.W_ = None          # (d, D) random frequencies

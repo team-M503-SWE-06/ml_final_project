@@ -116,6 +116,27 @@ def test_minibatch_trains_and_objective_decreases(batch_size):
     assert m.n_support_ == m.support_vector_mask(X, y).sum()
 
 
+@pytest.mark.parametrize("batch_size", [1, 32])
+def test_averaging_only_changes_the_returned_weights(batch_size):
+    # same seed -> identical trajectory; only the last epoch's output differs
+    X, y = _blobs(n=4000, sep=0.5, seed=12)
+    kw = dict(lambda_=1e-4, n_epochs=8, batch_size=batch_size, random_state=12)
+    last = PegasosSVM(average=False, **kw).fit(X, y)
+    avg = PegasosSVM(average=True, **kw).fit(X, y)
+    assert last.loss_history_[:-1] == avg.loss_history_[:-1]
+    assert not np.array_equal(last.w, avg.w)
+
+
+def test_averaging_lowers_the_objective():
+    # Averaging is not guaranteed to beat every single last iterate; in this regime
+    # (n=4000, lambda=1e-4, batch_size=1) it gave a >= 4% lower J for each of 11 seeds checked.
+    X, y = _blobs(n=4000, sep=0.5, seed=12)
+    kw = dict(lambda_=1e-4, n_epochs=8, random_state=12)
+    last = PegasosSVM(average=False, **kw).fit(X, y)
+    avg = PegasosSVM(average=True, **kw).fit(X, y)
+    assert avg.loss_history_[-1] < 0.96 * last.loss_history_[-1]
+
+
 @pytest.mark.parametrize("schedule", ["pegasos", "invsqrt", "constant"])
 def test_lr_schedules_train(schedule):
     X, y = _blobs(seed=6)
