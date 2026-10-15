@@ -1,29 +1,22 @@
 """
-svm.py — a soft-margin SVM built FROM SCRATCH via PEGASOS (NumPy only).
+svm.py — linear soft-margin SVM trained with Pegasos, from scratch (NumPy only).
 
-You do NOT need a QP / SMO solver. Pegasos minimises the regularised
-hinge-loss primal by stochastic sub-gradient descent:
+PegasosSVM minimises the regularised hinge-loss primal by stochastic
+sub-gradient descent (Shalev-Shwartz et al., 2011), so no QP / SMO solver is
+needed. Any two class labels are accepted: they are mapped to {-1, +1} for
+training and mapped back in predict. The class docstring gives the exact
+objective (the bias is regularised as a constant-1 feature) and fit() the
+update rule; the objective is recorded after every epoch in loss_history_.
+After fitting, norm_w_, margin_width_ (2/||w||) and support_vector_mask
+report the margin and the support vectors.
 
-    J(w, b) = (lambda/2) * ||w||^2
-              + (1/n) * sum_i  max(0, 1 - y_i (w . x_i + b))
+RFFPegasosSVM adds the non-linear extension: random Fourier features that
+approximate an RBF kernel, followed by the same linear solver (its docstring
+explains why this was chosen over kernelised Pegasos).
 
-with labels y_i in {-1, +1}. Per-step update with learning rate
-eta_t = 1 / (lambda * t):
-
-    if  y_i (w . x_i + b) < 1:
-        w <- (1 - eta_t*lambda) w + eta_t*y_i*x_i      (hinge active)
-    else:
-        w <- (1 - eta_t*lambda) w                      (only regularise)
-
-(Handle b with its own sub-gradient step; many implementations fold a bias
-feature into x instead — your choice, just be consistent.)
-
-Non-linear extension (pick ONE and justify it in the report):
-  - kernelised Pegasos (keep per-sample coefficients alpha_i), OR
-  - random Fourier features (map X -> phi(X), then run LINEAR Pegasos).
-
-scikit-learn's SVC is a BASELINE only — not allowed inside this class.
-Remember to STANDARDIZE features (see data_prep.standardize) before training.
+Inputs must be imputed and standardized with TRAIN statistics first
+(data_prep.impute_median, data_prep.standardize): the hinge loss is
+scale-sensitive. scikit-learn is used only for baselines elsewhere, never here.
 """
 
 from __future__ import annotations
@@ -67,6 +60,7 @@ class PegasosSVM:
         project: bool = True,
         random_state: int = 42,
         batch_size: int = 1,
+        average: bool = True,
     ):
         self.lambda_ = lambda_
         self.n_epochs = n_epochs
@@ -75,6 +69,7 @@ class PegasosSVM:
         self.project = project
         self.random_state = random_state
         self.batch_size = batch_size
+        self.average = average
 
         self.w = None
         self.b = 0.0
@@ -134,7 +129,13 @@ class PegasosSVM:
         steps per epoch: one vectorised NumPy op per batch instead of a Python
         step per row.
 
-        The objective J is recorded after every epoch in ``loss_history_``.
+        average=True (default) returns the mean of the iterates over the final
+        epoch instead of the last iterate (tail averaging, as in Pegasos / ASGD).
+        The last SGD iterate still carries step noise; averaging removes most of
+        it for one vector add per step.
+
+        The objective J is recorded after every epoch in ``loss_history_``; with
+        average=True the last entry is J of the returned (averaged) weights.
         Return self.
         """
         if self.lambda_ <= 0:
@@ -166,8 +167,10 @@ class PegasosSVM:
 
         t = 0
         lam = self.lambda_
-        for _ in range(self.n_epochs):
+        for epoch in range(self.n_epochs):
             order = rng.permutation(n)
+            averaging = self.average and epoch == self.n_epochs - 1
+            w_sum, b_sum, n_avg = np.zeros(d), 0.0, 0
             if k == 1:
                 # scalar path: indexing a 1-row batch costs more than the update itself
                 for i in order:
@@ -185,6 +188,10 @@ class PegasosSVM:
                         if norm > radius:
                             w *= radius / norm
                             b *= radius / norm
+                    if averaging:
+                        w_sum += w
+                        b_sum += b
+                        n_avg += 1
             else:
                 for start in range(0, n, k):
                     idx = order[start:start + k]
@@ -203,6 +210,12 @@ class PegasosSVM:
                         if norm > radius:
                             w *= radius / norm
                             b *= radius / norm
+                    if averaging:
+                        w_sum += w
+                        b_sum += b
+                        n_avg += 1
+            if averaging:                       # returned model = mean iterate of the last epoch
+                w, b = w_sum / n_avg, b_sum / n_avg
             self.w, self.b = w, float(b)
             self.loss_history_.append(self._objective(X, y_pm1))
 
@@ -283,10 +296,11 @@ class RFFPegasosSVM(PegasosSVM):
         project: bool = True,
         random_state: int = 42,
         batch_size: int = 1,
+        average: bool = True,
     ):
         super().__init__(lambda_=lambda_, n_epochs=n_epochs, lr_schedule=lr_schedule,
                          eta0=eta0, project=project, random_state=random_state,
-                         batch_size=batch_size)
+                         batch_size=batch_size, average=average)
         self.n_components = n_components
         self.gamma = gamma
         self.W_ = None          # (d, D) random frequencies
