@@ -184,38 +184,58 @@ class DecisionTree:
         return int(feature), float(threshold), float(gain[pos, feature])
 
     # --- grow / predict -----------------------------------------------------
-    def _grow(self, X, y, depth: int) -> Node:
+    def _new_node(self, y) -> Node:
+        return Node(n_samples=len(y), impurity=self._impurity(y), value=self._leaf_value(y))
+
+    def _choose_split(self, X, y, node: Node, depth: int):
         """
-        Recursively build the tree. A node becomes a leaf when
+        Decide whether `node` (holding rows X, y) is split. It stays a leaf when
           - it reached max_depth,
           - it has fewer than min_samples_split rows,
-          - it is pure (impurity 0),
+          - it is pure,
           - no threshold leaves min_samples_leaf rows on both sides, or
           - the best split's weighted decrease (N_t / N) * gain is below
             min_impurity_decrease (sklearn's definition, N = training rows).
+        Returns (feature, threshold, gain) or None.
         """
-        n = len(y)
-        impurity = self._impurity(y)
-        node = Node(n_samples=n, impurity=impurity, value=self._leaf_value(y))
-
         if self.max_depth is not None and depth >= self.max_depth:
-            return node
-        if n < self.min_samples_split or self._is_pure(y, impurity):
-            return node
-
+            return None
+        if node.n_samples < self.min_samples_split or self._is_pure(y, node.impurity):
+            return None
         split = self._best_split(X, y)
         if split is None:
-            return node
-        feature, threshold, gain = split
-        if (n / self._n_train) * gain + EPSILON < self.min_impurity_decrease:
-            return node
+            return None
+        if (node.n_samples / self._n_train) * split[2] + EPSILON < self.min_impurity_decrease:
+            return None
+        return split
 
-        go_left = X[:, feature] <= threshold
-        node.feature, node.threshold = feature, threshold
-        self._importances[feature] += n * gain    # = N_t*I_t - N_left*I_left - N_right*I_right
-        node.left = self._grow(X[go_left], y[go_left], depth + 1)
-        node.right = self._grow(X[~go_left], y[~go_left], depth + 1)
-        return node
+    def _grow(self, X, y) -> Node:
+        """
+        Build the tree top-down by recursive partitioning: split a node, then
+        split each child the same way, until every branch hits a stopping rule.
+
+        The recursion is written with an explicit stack of (node, row indices,
+        depth) instead of Python function calls, so a very deep tree
+        (max_depth=None on chain-like data) cannot hit Python's recursion limit
+        of ~1000, and children get row indices instead of copies of X.
+        """
+        root = self._new_node(y)
+        stack = [(root, np.arange(len(y)), 0)]
+        while stack:
+            node, rows, depth = stack.pop()
+            X_node, y_node = X[rows], y[rows]
+            split = self._choose_split(X_node, y_node, node, depth)
+            if split is None:
+                continue
+            feature, threshold, gain = split
+            node.feature, node.threshold = feature, threshold
+            self._importances[feature] += node.n_samples * gain   # = N_t*I_t - N_L*I_L - N_R*I_R
+            go_left = X_node[:, feature] <= threshold
+            node.left = self._new_node(y_node[go_left])
+            node.right = self._new_node(y_node[~go_left])
+            stack.append((node.right, rows[~go_left], depth + 1))
+            stack.append((node.left, rows[go_left], depth + 1))
+        return root
 
     def fit(self, X, y):
         """Build the tree from X (n_samples, n_features) and y. Returns self."""
@@ -245,7 +265,7 @@ class DecisionTree:
         self.n_features_in_ = X.shape[1]
         self._n_train = len(y)
         self._importances = np.zeros(X.shape[1])
-        self.root = self._grow(X, y, depth=0)
+        self.root = self._grow(X, y)
 
         total = self._importances.sum()
         self.feature_importances_ = self._importances / total if total > 0 else self._importances
@@ -255,25 +275,26 @@ class DecisionTree:
         if self.root is None:
             raise RuntimeError("call fit first")
 
+    def _leaf_depths(self) -> list[int]:
+        """Depth of every leaf, walking the tree with an explicit stack."""
+        self._check_fitted()
+        depths, stack = [], [(self.root, 0)]
+        while stack:
+            node, depth = stack.pop()
+            if node.is_leaf():
+                depths.append(depth)
+            else:
+                stack.append((node.left, depth + 1))
+                stack.append((node.right, depth + 1))
+        return depths
+
     def get_depth(self) -> int:
         """Length of the longest root-to-leaf path (a single leaf has depth 0)."""
-        self._check_fitted()
-
-        def depth(node: Node) -> int:
-            if node.is_leaf():
-                return 0
-            return 1 + max(depth(node.left), depth(node.right))
-        return depth(self.root)
+        return max(self._leaf_depths())
 
     def get_n_leaves(self) -> int:
         """Number of leaves."""
-        self._check_fitted()
-
-        def count(node: Node) -> int:
-            if node.is_leaf():
-                return 1
-            return count(node.left) + count(node.right)
-        return count(self.root)
+        return len(self._leaf_depths())
 
     def _leaf_values(self, X):
         """
