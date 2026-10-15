@@ -114,6 +114,16 @@ class DecisionTree:
             return np.bincount(y, minlength=len(self.classes_)) / len(y)
         return float(y.mean())
 
+    @staticmethod
+    def _is_pure(y, impurity: float) -> bool:
+        """
+        A node is pure when its impurity is ~0 or all targets are identical.
+        The second test matters for regression with large targets: the mean of
+        identical values like 1.23e8 can be off by one ulp, which leaves an MSE
+        of ~1e-14 that a fixed EPSILON does not catch.
+        """
+        return impurity <= EPSILON or bool(np.all(y == y[0]))
+
     def _best_split(self, X, y):
         """
         Search every feature and every candidate threshold of this node at once.
@@ -190,7 +200,7 @@ class DecisionTree:
 
         if self.max_depth is not None and depth >= self.max_depth:
             return node
-        if n < self.min_samples_split or impurity <= EPSILON:
+        if n < self.min_samples_split or self._is_pure(y, impurity):
             return node
 
         split = self._best_split(X, y)
