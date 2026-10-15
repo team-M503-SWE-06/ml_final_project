@@ -33,7 +33,7 @@ SEED = data_prep.SEED
 LAMBDA = 1e-3                      # best linear lambda by validation F1 in svm_sweeps.py
 TOP_K = 12                         # weights shown per sign
 SCHEDULES = {"pegasos": None, "invsqrt": 0.5, "constant": 0.01}   # schedule -> eta0
-EPOCHS = [1, 2, 5, 10, 20]
+EPOCHS = [1, 2, 5, 10, 20, 50]
 
 
 def objective(w, b, X, y_pm1, lam=LAMBDA) -> float:
@@ -77,27 +77,37 @@ def weights(model, names):
 
 # --- 2. epochs and learning-rate schedule (Problem 3b) --------------------------
 def hyperparams(Xtr, ytr, Xva, yva):
+    """Raw last iterates per schedule (average=False), plus the averaged default for reference."""
     rows, curves = [], {}
     for sched, eta0 in SCHEDULES.items():
-        kw = dict(lambda_=LAMBDA, lr_schedule=sched, random_state=SEED)
+        kw = dict(lambda_=LAMBDA, lr_schedule=sched, average=False, random_state=SEED)
         if eta0 is not None:
             kw["eta0"] = eta0
         for ep in EPOCHS:
             m = PegasosSVM(n_epochs=ep, **kw).fit(Xtr, ytr)
             f1, auc, _ = val_scores(m, Xva, yva)
-            rows.append(dict(schedule=sched, eta0=eta0 or "", n_epochs=ep, val_f1=f1, val_auc=auc,
-                             norm_w=m.norm_w_, margin=m.margin_width_, n_sv=m.n_support_,
-                             final_objective=m.loss_history_[-1]))
+            rows.append(dict(schedule=sched, eta0=eta0 or "", average=False, n_epochs=ep,
+                             val_f1=f1, val_auc=auc, norm_w=m.norm_w_, margin=m.margin_width_,
+                             n_sv=m.n_support_, final_objective=m.loss_history_[-1]))
             print(f"{sched:8s} epochs={ep:2d} val_f1={f1:.3f} auc={auc:.3f} "
                   f"margin={m.margin_width_:.3f} sv={m.n_support_} J={m.loss_history_[-1]:.4f}")
         curves[sched] = m.loss_history_                 # from the longest run
+
+    avg = PegasosSVM(lambda_=LAMBDA, random_state=SEED).fit(Xtr, ytr)   # default: 10 epochs, averaged
+    f1, auc, _ = val_scores(avg, Xva, yva)
+    rows.append(dict(schedule="pegasos", eta0="", average=True, n_epochs=avg.n_epochs,
+                     val_f1=f1, val_auc=auc, norm_w=avg.norm_w_, margin=avg.margin_width_,
+                     n_sv=avg.n_support_, final_objective=avg.loss_history_[-1]))
+    print(f"pegasos  epochs={avg.n_epochs:2d} AVERAGED val_f1={f1:.3f} auc={auc:.3f} "
+          f"margin={avg.margin_width_:.3f} sv={avg.n_support_} J={avg.loss_history_[-1]:.4f}")
     save_csv(rows, "svm_epochs_schedule.csv")
 
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(8, 3.3))
     for sched, h in curves.items():
         a1.plot(range(1, len(h) + 1), h, marker="o", ms=2, label=sched)
-        r = [x for x in rows if x["schedule"] == sched]
+        r = [x for x in rows if x["schedule"] == sched and not x["average"]]
         a2.plot([x["n_epochs"] for x in r], [x["margin"] for x in r], marker="o", ms=3, label=sched)
+    a1.plot([avg.n_epochs], [avg.loss_history_[-1]], "k*", ms=9, label="pegasos, averaged")
     a1.set_xlabel("epoch"); a1.set_ylabel("objective J(w, b)"); a1.set_yscale("log")
     a2.set_xlabel("epochs"); a2.set_ylabel("margin 2/||w||")
     for a in (a1, a2):
@@ -118,7 +128,8 @@ def sklearn_gap(Xtr, ytr, Xva, yva):
         # C * sum hinge + 1/2 ||w||^2  ==  (1 / (C n)) * [lambda/2 ||w||^2 + mean hinge] with C = 1/(lambda n)
         "sklearn LinearSVC(hinge)": LinearSVC(loss="hinge", C=1.0 / (LAMBDA * n), dual=True,
                                               max_iter=50_000, random_state=SEED),
-        "ours PegasosSVM": PegasosSVM(lambda_=LAMBDA, random_state=SEED),
+        "ours PegasosSVM (last iterate)": PegasosSVM(lambda_=LAMBDA, average=False, random_state=SEED),
+        "ours PegasosSVM": PegasosSVM(lambda_=LAMBDA, random_state=SEED),     # default: averaged
     }
     fitted, rows = {}, []
     for name, m in models.items():
@@ -145,10 +156,10 @@ def sklearn_gap(Xtr, ytr, Xva, yva):
         r["val_agreement_with_ours"] = float(np.mean(m.predict(Xva) == ours_pred))
     save_csv(rows, "svm_vs_sklearn.csv")
 
-    print(f"\n{'model':30s} {'fit_s':>6} {'conv':>5} {'val_f1':>7} {'auc':>6} {'J_train':>8} "
+    print(f"\n{'model':32s} {'fit_s':>6} {'conv':>5} {'val_f1':>7} {'auc':>6} {'J_train':>8} "
           f"{'||w||':>7} {'margin':>7} {'n_sv':>6} {'cos_w':>6} {'agree':>6}")
     for r in rows:
-        print(f"{r['model']:30s} {r['fit_seconds']:6.2f} {str(r['converged']):>5} {r['val_f1']:7.4f} "
+        print(f"{r['model']:32s} {r['fit_seconds']:6.2f} {str(r['converged']):>5} {r['val_f1']:7.4f} "
               f"{r['val_auc']:6.4f} {r['train_objective']:8.4f} {r['norm_w']:7.3f} {r['margin']:7.3f} "
               f"{r['n_sv']:6d} {r['cos_w_vs_ours']:6.3f} {r['val_agreement_with_ours']:6.3f}")
     return rows
