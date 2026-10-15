@@ -39,20 +39,32 @@ def one_hot_groups(feature_names) -> dict:
 
 
 def permutation_importance(model, X, y, metric, groups: dict, higher_is_better: bool = True,
-                           n_repeats: int = 5, seed: int = 42):
+                           n_repeats: int = 5, seed: int = 42, response: str = "predict"):
     """
     Score drop when each group of columns is shuffled (rows permuted jointly).
 
-    metric(y_true, y_pred) -> float is computed on model.predict(X). The
-    importance of a group is baseline - shuffled score (or shuffled -
+    metric(y_true, model_output) -> float. `response` picks the model output
+    passed to it: "predict" for labels / regression values (F1, accuracy,
+    RMSE, R2) or "proba" for the positive-class probability
+    predict_proba(X)[:, 1] (ROC-AUC needs scores, not hard labels).
+
+    The importance of a group is baseline - shuffled score (or shuffled -
     baseline when lower is better), so a positive value always means "the
     model needs this feature". Returns {group: (mean, std)} over n_repeats,
     sorted from most to least important.
     """
+    if response == "predict":
+        output = model.predict
+    elif response == "proba":
+        def output(X_in):
+            return model.predict_proba(X_in)[:, 1]
+    else:
+        raise ValueError(f"response must be 'predict' or 'proba', got {response!r}")
+
     X = np.asarray(X, dtype=float)
     rng = np.random.default_rng(seed)
     sign = 1.0 if higher_is_better else -1.0
-    baseline = metric(y, model.predict(X))
+    baseline = metric(y, output(X))
 
     result = {}
     for name, cols in groups.items():
@@ -60,6 +72,6 @@ def permutation_importance(model, X, y, metric, groups: dict, higher_is_better: 
         for _ in range(n_repeats):
             X_shuffled = X.copy()
             X_shuffled[:, cols] = X[rng.permutation(len(X))][:, cols]
-            drops.append(sign * (baseline - metric(y, model.predict(X_shuffled))))
+            drops.append(sign * (baseline - metric(y, output(X_shuffled))))
         result[name] = (float(np.mean(drops)), float(np.std(drops)))
     return dict(sorted(result.items(), key=lambda item: -item[1][0]))

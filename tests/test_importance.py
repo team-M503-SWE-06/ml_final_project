@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from src import evaluate as ev
 from src.decision_tree import DecisionTree
 from src.importance import one_hot_groups, permutation_importance
@@ -48,6 +49,24 @@ def test_group_shuffle_keeps_one_hot_rows_valid():
 
     permutation_importance(Spy(), X, y, ev.rmse, one_hot_groups(names), n_repeats=2)
     assert all(np.allclose(s, 1.0) for s in seen)
+
+
+def test_auc_uses_probabilities_when_asked():
+    X, y, names = _data()
+    labels = (y > np.median(y)).astype(int)
+    model = DecisionTree(criterion="gini", max_depth=4).fit(X[:400], labels[:400])
+    seen = []
+
+    def metric(y_true, scores):
+        seen.append(np.unique(scores).size)
+        return ev.roc_auc(y_true, scores)
+
+    imp = permutation_importance(model, X[400:], labels[400:], metric, one_hot_groups(names),
+                                 response="proba", n_repeats=2)
+    assert max(seen) > 2                        # real scores, not 0/1 labels
+    assert list(imp)[0] == "signal"
+    with pytest.raises(ValueError):
+        permutation_importance(model, X, labels, metric, one_hot_groups(names), response="x")
 
 
 def test_deterministic_for_a_seed():
