@@ -40,6 +40,9 @@ class PegasosSVM:
     w, b              : weight vector and bias
     classes_          : original labels, classes_[1] is the "+1" class
     loss_history_     : objective J after every epoch (list of floats)
+    norm_w_           : ||w||
+    margin_width_     : 2 / ||w||   (geometric margin width)
+    n_support_        : number of training points with y_i f(x_i) <= 1
     """
 
     def __init__(
@@ -159,6 +162,7 @@ class PegasosSVM:
             self.loss_history_.append(self._objective(X, y_pm1))
 
         self.w, self.b = w, float(b)
+        self.n_support_ = int(self.support_vector_mask(X, y).sum())
         return self
 
     def decision_function(self, X) -> np.ndarray:
@@ -170,3 +174,29 @@ class PegasosSVM:
         """Map sign(w.x + b) back to the original labels (score 0 -> positive class)."""
         scores = self.decision_function(X)
         return np.where(scores >= 0.0, self.classes_[1], self.classes_[0])
+
+    # --- margin (Problem 3c) ------------------------------------------------
+    @property
+    def norm_w_(self) -> float:
+        """||w|| (the bias is not part of the margin)."""
+        if self.w is None:
+            raise RuntimeError("PegasosSVM is not fitted yet")
+        return float(np.linalg.norm(self.w))
+
+    @property
+    def margin_width_(self) -> float:
+        """Geometric margin width 2 / ||w|| (inf if w == 0)."""
+        nw = self.norm_w_
+        return float("inf") if nw == 0 else 2.0 / nw
+
+    def support_vector_mask(self, X, y) -> np.ndarray:
+        """Boolean mask of support vectors: points with y_i (w.x_i + b) <= 1."""
+        scores = self.decision_function(X)
+        y = np.asarray(y).ravel()
+        if len(y) != len(scores):
+            raise ValueError("X and y have different lengths")
+        unknown = ~np.isin(y, self.classes_)
+        if unknown.any():
+            raise ValueError(f"y has labels not seen in fit: {np.unique(y[unknown]).tolist()}")
+        y_pm1 = np.where(y == self.classes_[1], 1.0, -1.0)
+        return y_pm1 * scores <= 1.0
