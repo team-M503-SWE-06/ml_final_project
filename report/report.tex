@@ -265,10 +265,11 @@ as 50 epochs of the raw last iterate, so it is our default.
     \toprule
     Model & F1 & AUC & $J$ & margin & fit (s) & agree \\
     \midrule
-    Ours, averaged (default)  & 0.844 & 0.922 & 0.385 & 0.715 & 2.23 & --- \\
-    Ours, last iterate        & 0.841 & 0.917 & 0.395 & 0.705 & 2.02 & 95.7\% \\
-    SGDClassifier (hinge)     & 0.840 & 0.921 & 0.387 & 0.737 & 0.29 & 96.5\% \\
-    LinearSVC (hinge)         & 0.840 & 0.921 & 0.383 & 0.771 & 0.64 & 98.1\% \\
+    Ours, averaged (default)  & 0.844 & 0.922 & 0.385 & 0.715 & 2.07 & --- \\
+    Ours, last iterate        & 0.841 & 0.917 & 0.395 & 0.705 & 2.07 & 95.7\% \\
+    Ours, batch 256, averaged & 0.844 & 0.922 & 0.385 & 0.696 & 0.17 & 99.5\% \\
+    SGDClassifier (hinge)     & 0.840 & 0.921 & 0.387 & 0.737 & 0.21 & 96.5\% \\
+    LinearSVC (hinge)         & 0.840 & 0.921 & 0.383 & 0.771 & 0.68 & 98.1\% \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -281,10 +282,10 @@ the weight vectors point the same way (cosine similarity 0.997) and
 (0.844 vs.\ 0.840 and 0.922 vs.\ 0.921). The remaining gap comes from
 (i) stopping a stochastic solver after 10 epochs, (ii) regularising the
 bias, which LinearSVC also does but SGDClassifier does not, and (iii) the
-projection step. Ours is the slowest because the per-example update is a
+projection step. Our per-example default is the slowest because its update is a
 Python loop while scikit-learn's solvers are compiled; with mini-batches
-of 256 and averaging, 10 epochs take about 0.2\,s with the same F1
-(0.844) and AUC (0.922).
+of 256 and averaging, 10 epochs take 0.17\,s with the same F1 (0.844) and
+AUC (0.922) (Table~\ref{tab:svm_sklearn}).
 
 \section{Discussion and Limitations}
 Where and why each model fails (luxury outliers, sparse districts,

@@ -129,6 +129,7 @@ def sklearn_gap(Xtr, ytr, Xva, yva):
         "sklearn LinearSVC(hinge)": LinearSVC(loss="hinge", C=1.0 / (LAMBDA * n), dual=True,
                                               max_iter=50_000, random_state=SEED),
         "ours PegasosSVM (last iterate)": PegasosSVM(lambda_=LAMBDA, average=False, random_state=SEED),
+        "ours PegasosSVM (batch 256)": PegasosSVM(lambda_=LAMBDA, batch_size=256, random_state=SEED),
         "ours PegasosSVM": PegasosSVM(lambda_=LAMBDA, random_state=SEED),     # default: averaged
     }
     fitted, rows = {}, []
