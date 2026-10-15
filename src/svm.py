@@ -7,6 +7,12 @@ needed. Any two class labels are accepted: they are mapped to {-1, +1} for
 training and mapped back in predict. The class docstring gives the exact
 objective (the bias is regularised as a constant-1 feature) and fit() the
 update rule; the objective is recorded after every epoch in loss_history_.
+After fitting, norm_w_, margin_width_ (2/||w||) and support_vector_mask
+report the margin and the support vectors.
+
+RFFPegasosSVM adds the non-linear extension: random Fourier features that
+approximate an RBF kernel, followed by the same linear solver (its docstring
+explains why this was chosen over kernelised Pegasos).
 
 Inputs must be imputed and standardized with TRAIN statistics first
 (data_prep.impute_median, data_prep.standardize): the hinge loss is
