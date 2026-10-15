@@ -9,6 +9,11 @@ def test_one_hot_groups():
     assert one_hot_groups(names) == {"area": [0], "district": [1, 3], "lat": [2], "category": [4]}
 
 
+def test_missing_flag_is_grouped_with_its_column():
+    names = ["rooms", "floor", "rooms_missing", "floor_missing", "is_baku"]
+    assert one_hot_groups(names) == {"rooms": [0, 2], "floor": [1, 3], "is_baku": [4]}
+
+
 def _data():
     rng = np.random.default_rng(0)
     signal = rng.normal(size=600)

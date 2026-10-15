@@ -7,23 +7,33 @@ top 8. Permutation importance measures what the model actually loses on
 held-out data when one feature's values are shuffled, which breaks its link
 with the target while keeping its distribution.
 
-One-hot columns of the same categorical (e.g. every "district=..." column)
-are shuffled TOGETHER as one group, so each row still has exactly one level.
+Columns that describe the same raw feature are shuffled TOGETHER as one
+group, so every shuffled row is still a possible row:
+  - one-hot levels of a categorical ("district=..."), exactly one 1 per row,
+  - a numeric column and its missing-value flag ("rooms" + "rooms_missing").
 """
 from __future__ import annotations
 
 import numpy as np
 
+MISSING_SUFFIX = "_missing"
+
 
 def one_hot_groups(feature_names) -> dict:
     """
-    Map each feature to its column indices: "district=Nasimi" and
-    "district=other" form one group "district"; every other column is its
-    own group. Order follows the first appearance in feature_names.
+    Map each raw feature to its column indices: "district=Nasimi" and
+    "district=other" form the group "district", and "rooms_missing" joins
+    "rooms". Every other column is its own group. Order follows the first
+    appearance in feature_names.
     """
     groups = {}
     for j, name in enumerate(feature_names):
-        key = name.split("=", 1)[0] if "=" in name else name
+        if "=" in name:
+            key = name.split("=", 1)[0]
+        elif name.endswith(MISSING_SUFFIX):
+            key = name[: -len(MISSING_SUFFIX)]
+        else:
+            key = name
         groups.setdefault(key, []).append(j)
     return groups
 
