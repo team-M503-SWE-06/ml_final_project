@@ -67,6 +67,28 @@ def test_objective_decreases():
     assert h[-5:].std() < 0.05 * h[-1]
 
 
+def test_margin_and_support_vectors():
+    X, y = _blobs(n=400, sep=0.7, seed=4)
+    m = PegasosSVM(lambda_=0.01, random_state=4).fit(X, y)
+    assert np.isclose(m.norm_w_, np.linalg.norm(m.w))
+    assert np.isclose(m.margin_width_, 2 / np.linalg.norm(m.w))
+    mask = m.support_vector_mask(X, y)
+    yf = np.where(y == 1, 1, -1) * m.decision_function(X)
+    assert np.array_equal(mask, yf <= 1)
+    assert m.n_support_ == mask.sum() and 0 < m.n_support_ < len(y)
+    with pytest.raises(ValueError):
+        m.support_vector_mask(X, np.full(len(y), 7))
+
+
+def test_larger_lambda_gives_wider_margin():
+    X, y = _blobs(n=400, sep=0.7, seed=5)
+    fits = [PegasosSVM(lambda_=lam, random_state=5).fit(X, y) for lam in (1e-4, 1e-2, 1.0)]
+    margins = [m.margin_width_ for m in fits]
+    assert margins[0] < margins[1] < margins[2]
+    n_sv = [m.n_support_ for m in fits]
+    assert n_sv[0] <= n_sv[1] <= n_sv[2]       # wider margin -> more points inside it
+
+
 @pytest.mark.parametrize("schedule", ["pegasos", "invsqrt", "constant"])
 def test_lr_schedules_train(schedule):
     X, y = _blobs(seed=6)
