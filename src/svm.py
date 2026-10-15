@@ -85,8 +85,45 @@ class PegasosSVM:
             return self.eta0 / np.sqrt(t)
         return self.eta0
 
+    def _objective(self, X, y_pm1) -> float:
+        """J(w, b) as defined in the class docstring (bias regularised)."""
+        hinge = np.maximum(0.0, 1.0 - y_pm1 * (X @ self.w + self.b))
+        reg = 0.5 * self.lambda_ * (self.w @ self.w + self.b ** 2)
+        return float(reg + hinge.mean())
+
     def fit(self, X, y):
-        raise NotImplementedError("TODO: Pegasos training loop")
+        X = np.asarray(X, dtype=float)
+        y_pm1, self.classes_ = self._to_pm1(y)
+        n, d = X.shape
+        w = np.zeros(d)
+        b = 0.0
+        radius = 1.0 / np.sqrt(self.lambda_)
+        rng = np.random.default_rng(self.random_state)
+        self.loss_history_ = []
+
+        t = 0
+        for _ in range(self.n_epochs):
+            for i in rng.permutation(n):
+                t += 1
+                eta = self._eta(t)
+                shrink = 1.0 - eta * self.lambda_
+                xi, yi = X[i], y_pm1[i]
+                active = yi * (xi @ w + b) < 1.0
+                w *= shrink
+                b *= shrink
+                if active:
+                    w += eta * yi * xi
+                    b += eta * yi
+                if self.project:
+                    norm = np.sqrt(w @ w + b * b)
+                    if norm > radius:
+                        w *= radius / norm
+                        b *= radius / norm
+            self.w, self.b = w, float(b)
+            self.loss_history_.append(self._objective(X, y_pm1))
+
+        self.w, self.b = w, float(b)
+        return self
 
     def decision_function(self, X):
         raise NotImplementedError("TODO: decision_function")
