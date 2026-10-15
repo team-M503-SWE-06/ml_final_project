@@ -221,6 +221,26 @@ def test_size_parameters_must_be_integers_and_queries_need_fit():
         DecisionTree().predict(X)
 
 
+def test_very_deep_chain_tree_does_not_hit_the_recursion_limit():
+    n = 1100                                   # deeper than the ~1000 recursion limit
+    X = np.arange(n, dtype=float)[:, None]
+    y = np.arange(n) % 2                       # every split peels off one row
+    tree = DecisionTree(criterion="gini").fit(X, y)
+    expected = DecisionTreeClassifier(random_state=0).fit(X, y)
+    assert tree.get_depth() == expected.get_depth() == n - 1
+    assert tree.get_n_leaves() == n
+    assert (tree.predict(X) == y).all()
+
+
+def test_constant_large_targets_form_a_pure_node():
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(200, 3))
+    y = np.where(X[:, 0] > 0, 123456789.123, 1.5 * 123456789.123)
+    tree = DecisionTree(task="regression", criterion="mse").fit(X, y)
+    assert tree.get_n_leaves() == 2
+    assert tree.feature_importances_[1:].sum() == 0.0
+
+
 def test_impurity_values():
     gini = DecisionTree(criterion="gini")
     gini.classes_ = np.array([0, 1])
