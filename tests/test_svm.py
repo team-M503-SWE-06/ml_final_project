@@ -89,6 +89,54 @@ def test_larger_lambda_gives_wider_margin():
     assert n_sv[0] <= n_sv[1] <= n_sv[2]       # wider margin -> more points inside it
 
 
+def test_full_batch_first_step_matches_closed_form():
+    # t=1: eta = 1/lambda, shrink = 0, w = 0 so every point is active:
+    # w_1 = (1 / (lambda * n)) * sum_i y_i x_i   (and the same for b)
+    X, y = _blobs(n=100, seed=9)
+    lam = 0.5
+    m = PegasosSVM(lambda_=lam, n_epochs=1, batch_size=len(y), project=False).fit(X, y)
+    y_pm = np.where(y == 1, 1.0, -1.0)
+    assert np.allclose(m.w, (y_pm @ X) / (lam * len(y)))
+    assert np.isclose(m.b, y_pm.sum() / (lam * len(y)))
+
+
+def test_batch_larger_than_n_is_full_batch():
+    X, y = _blobs(n=120, seed=10)
+    a = PegasosSVM(lambda_=0.01, n_epochs=5, batch_size=len(y)).fit(X, y)
+    b = PegasosSVM(lambda_=0.01, n_epochs=5, batch_size=10 * len(y)).fit(X, y)
+    assert np.array_equal(a.w, b.w) and a.b == b.b
+
+
+@pytest.mark.parametrize("batch_size", [8, 64])
+def test_minibatch_trains_and_objective_decreases(batch_size):
+    X, y = _blobs(n=400, sep=1.0, seed=11)
+    m = PegasosSVM(lambda_=0.01, n_epochs=30, batch_size=batch_size, random_state=11).fit(X, y)
+    assert np.mean(m.predict(X) == y) >= 0.95
+    assert m.loss_history_[-1] < m.loss_history_[0]
+    assert m.n_support_ == m.support_vector_mask(X, y).sum()
+
+
+@pytest.mark.parametrize("batch_size", [1, 32])
+def test_averaging_only_changes_the_returned_weights(batch_size):
+    # same seed -> identical trajectory; only the last epoch's output differs
+    X, y = _blobs(n=4000, sep=0.5, seed=12)
+    kw = dict(lambda_=1e-4, n_epochs=8, batch_size=batch_size, random_state=12)
+    last = PegasosSVM(average=False, **kw).fit(X, y)
+    avg = PegasosSVM(average=True, **kw).fit(X, y)
+    assert last.loss_history_[:-1] == avg.loss_history_[:-1]
+    assert not np.array_equal(last.w, avg.w)
+
+
+def test_averaging_lowers_the_objective():
+    # Averaging is not guaranteed to beat every single last iterate; in this regime
+    # (n=4000, lambda=1e-4, batch_size=1) it gave a >= 4% lower J for each of 11 seeds checked.
+    X, y = _blobs(n=4000, sep=0.5, seed=12)
+    kw = dict(lambda_=1e-4, n_epochs=8, random_state=12)
+    last = PegasosSVM(average=False, **kw).fit(X, y)
+    avg = PegasosSVM(average=True, **kw).fit(X, y)
+    assert avg.loss_history_[-1] < 0.96 * last.loss_history_[-1]
+
+
 @pytest.mark.parametrize("schedule", ["pegasos", "invsqrt", "constant"])
 def test_lr_schedules_train(schedule):
     X, y = _blobs(seed=6)
@@ -123,6 +171,10 @@ def test_input_validation():
         PegasosSVM(n_epochs=0).fit(X, y)
     with pytest.raises(ValueError):
         PegasosSVM(n_epochs=2.5).fit(X, y)
+    with pytest.raises(ValueError):
+        PegasosSVM(batch_size=0).fit(X, y)
+    with pytest.raises(ValueError):
+        PegasosSVM(batch_size=2.5).fit(X, y)
     with pytest.raises(ValueError):
         PegasosSVM(lr_schedule="adam").fit(X, y)
     with pytest.raises(ValueError):
