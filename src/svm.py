@@ -91,9 +91,45 @@ class PegasosSVM:
         reg = 0.5 * self.lambda_ * (self.w @ self.w + self.b ** 2)
         return float(reg + hinge.mean())
 
-    def fit(self, X, y):
+    def _check_X(self, X) -> np.ndarray:
+        if self.w is None:
+            raise RuntimeError("PegasosSVM is not fitted yet; call fit(X, y) first.")
         X = np.asarray(X, dtype=float)
+        if X.ndim != 2 or X.shape[1] != self.w.shape[0]:
+            raise ValueError(f"X must have shape (n, {self.w.shape[0]}), got {X.shape}")
+        if not np.isfinite(X).all():
+            raise ValueError("X contains NaN or inf values")
+        return X
+
+    def fit(self, X, y):
+        """
+        Run Pegasos for ``n_epochs`` shuffled passes (one example per step):
+
+            eta_t = schedule(t)
+            if y_i (w.x_i + b) < 1:  w <- (1 - eta_t*lambda) w + eta_t*y_i*x_i
+            else:                    w <- (1 - eta_t*lambda) w
+            (same rule for b, see class docstring)
+            optional: project (w, b) onto ||.|| <= 1/sqrt(lambda)
+
+        The objective J is recorded after every epoch in ``loss_history_``.
+        Return self.
+        """
+        if self.lambda_ <= 0:
+            raise ValueError("lambda_ must be > 0")
+        if not isinstance(self.n_epochs, (int, np.integer)) or isinstance(self.n_epochs, bool) or self.n_epochs < 1:
+            raise ValueError("n_epochs must be a positive integer")
+        if self.lr_schedule not in LR_SCHEDULES:
+            raise ValueError(f"lr_schedule must be one of {LR_SCHEDULES}")
+        if self.lr_schedule != "pegasos" and (self.eta0 <= 0 or self.eta0 * self.lambda_ >= 1):
+            raise ValueError("need 0 < eta0 * lambda_ < 1, otherwise the shrink factor is <= 0")
+
+        X = np.asarray(X, dtype=float)
+        if X.ndim != 2 or not np.isfinite(X).all():
+            raise ValueError("X must be a 2-D finite array without NaNs/infs (impute + standardize first)")
         y_pm1, self.classes_ = self._to_pm1(y)
+        if len(y_pm1) != len(X):
+            raise ValueError("X and y have different lengths")
+
         n, d = X.shape
         w = np.zeros(d)
         b = 0.0
@@ -125,8 +161,12 @@ class PegasosSVM:
         self.w, self.b = w, float(b)
         return self
 
-    def decision_function(self, X):
-        raise NotImplementedError("TODO: decision_function")
+    def decision_function(self, X) -> np.ndarray:
+        """Return the signed score  w . x + b  for each row."""
+        X = self._check_X(X)
+        return X @ self.w + self.b
 
-    def predict(self, X):
-        raise NotImplementedError("TODO: predict")
+    def predict(self, X) -> np.ndarray:
+        """Map sign(w.x + b) back to the original labels (score 0 -> positive class)."""
+        scores = self.decision_function(X)
+        return np.where(scores >= 0.0, self.classes_[1], self.classes_[0])
