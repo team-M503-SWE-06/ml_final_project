@@ -97,7 +97,7 @@ def test_lr_schedules_train(schedule):
 
 
 def test_sanity_vs_sklearn_toy_split():
-    """End-of-week-1 milestone: sanity test against sklearn on a toy split."""
+    """Sanity test against sklearn on a toy split."""
     X, y = _blobs(n=600, d=5, sep=0.8, seed=123)
     Xtr, Xte, ytr, yte = X[:450], X[450:], y[:450], y[450:]
     lam = 0.001
