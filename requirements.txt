@@ -1,5 +1,5 @@
-# Pinned to the versions installed in the project venv (Python 3.14.3).
-numpy==2.5.4
+# Pinned to the versions installed in the project venv (Python 3.11+).
+numpy==2.4.6
 pandas==3.0.6
 matplotlib==3.11.2
 scikit-learn==1.9.1   # baselines / optional bonuses ONLY — not for your models
