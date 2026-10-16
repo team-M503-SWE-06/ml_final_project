@@ -4,29 +4,32 @@ run_all.py — ONE command reproduces every headline number and figure.
 Run from the repo root:
     python -m src.run_all
 
-This orchestrator should:
-  1. load + clean the data,
-  2. build features, make the splits, standardize (for the SVM),
-  3. train YOUR decision tree (Task A regression, Task B classification),
-  4. train YOUR Pegasos SVM (Task B classification),
-  5. train the scikit-learn baselines with matched settings,
-  6. compute metrics and SAVE all figures to report/figures/,
-  7. print a final comparison table.
+Steps:
+  1. load + clean the data (cleaning log printed),
+  2. framing + frozen stratified train/val/test split (data/split_indices.npz),
+  3. EDA figures,
+  4. tree sweeps: criterion, max_depth, min_samples_leaf  (validation only),
+  5. SVM sweeps: lambda, RFF bandwidth, objective curve  (validation only),
+  6. SVM analysis: weights, epochs/schedule, matched sklearn comparison,
+  7. benchmark vs scikit-learn: 5-fold CV mean ± std, timings, one test-set
+     evaluation, tree structure comparison,
+  8. final results table.
 
-Everything must be deterministic (fixed seeds). Keep print output tidy so a
-grader can read the headline numbers straight from the console.
+Figures go to report/figures/, tables (CSV) to report/tables/. Every random
+step is seeded (data_prep.SEED), so reruns give the same numbers.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 
 import numpy as np
+import pandas as pd
 
 from . import data_prep, eda
-# from .decision_tree import DecisionTree
-# from .svm import PegasosSVM
-# from . import evaluate
+from . import evaluate as ev
+from .experiments import benchmark, svm_analysis, svm_sweeps, tree_sweeps
 
 
 def _section(title: str) -> None:
@@ -84,18 +87,40 @@ def main() -> None:
     for p in paths:
         print(f"  saved {p}")
 
-    # 2. Task A: regression (price) --------------------------------------
-    #    - your DecisionTree(task="regression", criterion="mse")
-    #    - sklearn DecisionTreeRegressor baseline
+    # the experiment scripts reload the data through the same frozen split
+    _section("4. Decision tree sweeps (validation)")
+    tree_sweeps.main()
 
-    # 3. Task B: classification (price tier) -----------------------------
-    #    - make_tier_label using TRAIN median
-    #    - your DecisionTree(task="classification")
-    #    - your PegasosSVM (standardized features)
-    #    - sklearn baselines (DecisionTreeClassifier, SVC/LinearSVC)
+    _section("5. SVM sweeps (validation)")
+    svm_sweeps.main()
 
-    # 4. metrics + figures + comparison ----------------------------------
-    #    evaluate.compare({...}); save plots to report/figures/
+    _section("6. SVM analysis (validation)")
+    svm_analysis.main()
+
+    _section("7. Benchmark vs scikit-learn (CV on train, one test evaluation)")
+    benchmark.main()
+
+    _section("8. Final results")
+    print_results(benchmark.OUT_DIR)
+
+
+def print_results(table_dir: str) -> None:
+    """Print the headline tables written by benchmark.main()."""
+    cv = pd.read_csv(os.path.join(table_dir, "benchmark_cv.csv"))
+    print("5-fold CV on train (mean ± std; fit/predict seconds per fold):")
+    for r in cv.itertuples():
+        print(f"  {r.task}  {r.model:28s} {r.metric} = {r.cv_mean:.4f} ± {r.cv_std:.4f}"
+              f"   fit {r.fit_s:7.2f}s   predict {r.predict_s:6.3f}s")
+
+    test = pd.read_csv(os.path.join(table_dir, "benchmark_test.csv")).set_index("model")
+    reg = test[test["rmse_log"].notna()]
+    cls = test[test["f1"].notna()]
+    print("\nTask A, test set (log price; AZN with smearing correction):")
+    ev.compare({m: r[["rmse_log", "mae_log", "r2_log", "rmse_azn", "mae_azn"]].to_dict()
+                for m, r in reg.iterrows()})
+    print("\nTask B, test set (premium = positive class):")
+    ev.compare({m: r[["precision", "recall", "f1", "auc"]].to_dict()
+                for m, r in cls.iterrows()})
 
 
 if __name__ == "__main__":
