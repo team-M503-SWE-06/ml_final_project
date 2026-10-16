@@ -1,0 +1,77 @@
+"""importance.py: permutation feature importance (NumPy only, works with any fitted model).
+
+Impurity-based importance (DecisionTree.feature_importances_, "MDI") is
+computed on the TRAINING data and favours features with many distinct
+values: in our experiments a pure-noise continuous column entered the MDI
+top 8. Permutation importance measures what the model actually loses on
+held-out data when one feature's values are shuffled, which breaks its link
+with the target while keeping its distribution.
+
+Columns that describe the same raw feature are shuffled TOGETHER as one
+group, so every shuffled row is still a possible row:
+  - one-hot levels of a categorical ("district=..."), exactly one 1 per row,
+  - a numeric column and its missing-value flag ("rooms" + "rooms_missing").
+"""
+from __future__ import annotations
+
+import numpy as np
+
+MISSING_SUFFIX = "_missing"
+
+
+def one_hot_groups(feature_names) -> dict:
+    """
+    Map each raw feature to its column indices: "district=Nasimi" and
+    "district=other" form the group "district", and "rooms_missing" joins
+    "rooms". Every other column is its own group. Order follows the first
+    appearance in feature_names.
+    """
+    groups = {}
+    for j, name in enumerate(feature_names):
+        if "=" in name:
+            key = name.split("=", 1)[0]
+        elif name.endswith(MISSING_SUFFIX):
+            key = name[: -len(MISSING_SUFFIX)]
+        else:
+            key = name
+        groups.setdefault(key, []).append(j)
+    return groups
+
+
+def permutation_importance(model, X, y, metric, groups: dict, higher_is_better: bool = True,
+                           n_repeats: int = 5, seed: int = 42, response: str = "predict"):
+    """
+    Score drop when each group of columns is shuffled (rows permuted jointly).
+
+    metric(y_true, model_output) -> float. `response` picks the model output
+    passed to it: "predict" for labels / regression values (F1, accuracy,
+    RMSE, R2) or "proba" for the positive-class probability
+    predict_proba(X)[:, 1] (ROC-AUC needs scores, not hard labels).
+
+    The importance of a group is baseline - shuffled score (or shuffled -
+    baseline when lower is better), so a positive value always means "the
+    model needs this feature". Returns {group: (mean, std)} over n_repeats,
+    sorted from most to least important.
+    """
+    if response == "predict":
+        output = model.predict
+    elif response == "proba":
+        def output(X_in):
+            return model.predict_proba(X_in)[:, 1]
+    else:
+        raise ValueError(f"response must be 'predict' or 'proba', got {response!r}")
+
+    X = np.asarray(X, dtype=float)
+    rng = np.random.default_rng(seed)
+    sign = 1.0 if higher_is_better else -1.0
+    baseline = metric(y, output(X))
+
+    result = {}
+    for name, cols in groups.items():
+        drops = []
+        for _ in range(n_repeats):
+            X_shuffled = X.copy()
+            X_shuffled[:, cols] = X[rng.permutation(len(X))][:, cols]
+            drops.append(sign * (baseline - metric(y, output(X_shuffled))))
+        result[name] = (float(np.mean(drops)), float(np.std(drops)))
+    return dict(sorted(result.items(), key=lambda item: -item[1][0]))
