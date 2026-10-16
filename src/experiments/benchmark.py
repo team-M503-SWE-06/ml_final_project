@@ -169,5 +169,40 @@ def main():
         test.append(r)
         print({k: (round(v, 4) if isinstance(v, float) else v) for k, v in r.items()})
 
-    cls_models = [("ours tree cls", ours_cls, Xte, "proba"), ("sklearn tree cls", sk_cls, Xte, "proba"),
-                  ("sklearn sgd",
+    sgd = make_pipeline(StandardScaler(), SGDClassifier(
+        loss="hinge", alpha=SVM_LAMBDA, random_state=SEED)).fit(Xtr, ctr)
+    lsvc = make_pipeline(StandardScaler(), LinearSVC(
+        loss="hinge", C=1.0 / (SVM_LAMBDA * len(Xtr)), dual=True,
+        max_iter=50_000, random_state=SEED)).fit(Xtr, ctr)
+    cls_models = [("ours tree cls", ours_cls, Xte, "proba"),
+                  ("sklearn tree cls", sk_cls, Xte, "proba"),
+                  ("sklearn sgd", sgd, Xte, "dec"),
+                  ("sklearn linearsvc", lsvc, Xte, "dec")]
+    if has_svm:
+        from src.svm import PegasosSVM
+        ours_svm = PegasosSVM(lambda_=SVM_LAMBDA, random_state=SEED).fit(Xs_tr, ctr)
+        cls_models.insert(2, ("ours svm", ours_svm, Xs_te, "dec"))
+    for name, m, Xb, kind in cls_models:
+        p = m.predict(Xb)
+        sc = m.predict_proba(Xb)[:, 1] if kind == "proba" else m.decision_function(Xb)
+        pr, rc, f1 = ev.precision_recall_f1(cte, p)
+        r = dict(model=name, precision=pr, recall=rc, f1=f1, auc=ev.roc_auc(cte, sc))
+        test.append(r)
+        print({k: (round(v, 4) if isinstance(v, float) else v) for k, v in r.items()})
+    pd.DataFrame(test).to_csv(os.path.join(OUT_DIR, "benchmark_test.csv"), index=False)
+
+    # ---- Problem 5(a): structure / prediction agreement with sklearn ----
+    print("\nSTRUCTURE vs scikit-learn (test set):")
+    struct = []
+    for task, o, s in [("A reg", ours_reg, sk_reg), ("B cls", ours_cls, sk_cls)]:
+        agree = float(np.mean(np.isclose(o.predict(Xte), s.predict(Xte))))
+        r = dict(task=task, ours_depth=o.get_depth(), sk_depth=s.get_depth(),
+                 ours_leaves=o.get_n_leaves(), sk_leaves=s.get_n_leaves(),
+                 identical_predictions=agree)
+        struct.append(r)
+        print(r)
+    pd.DataFrame(struct).to_csv(os.path.join(OUT_DIR, "benchmark_structure.csv"), index=False)
+
+
+if __name__ == "__main__":
+    main()
