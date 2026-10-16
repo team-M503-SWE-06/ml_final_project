@@ -33,18 +33,18 @@ OUT_DIR = os.path.join("report", "tables")
 
 
 def load_all():
-    """Train/test with the same leakage-safe steps as tree_sweeps.load_splits."""
+    """Train/val/test with the same leakage-safe steps as tree_sweeps.load_splits."""
     df = data_prep.clean(data_prep.load_raw())
     y_all = np.log(df["price"].to_numpy(dtype=float))
     itr, iva, ite = data_prep.split_indices(y_all, seed=SEED)
     fit_mask = np.zeros(len(df), dtype=bool)
     fit_mask[itr] = True
     X, y, _ = data_prep.make_features(df, fit_mask=fit_mask)
-    Xtr, Xte = data_prep.impute_median(X[itr], X[ite])
-    ytr, yte = y[itr], y[ite]
+    Xtr, Xte, Xva = data_prep.impute_median(X[itr], X[ite], X[iva])
+    ytr, yte, yva = y[itr], y[ite], y[iva]
     tier_tr, thr = data_prep.make_tier_label(ytr)
     tier_te, _ = data_prep.make_tier_label(yte, threshold=thr)
-    return Xtr, ytr, tier_tr, Xte, yte, tier_te
+    return Xtr, ytr, tier_tr, Xte, yte, tier_te, Xva, yva
 
 
 def svm_available() -> bool:
@@ -94,7 +94,7 @@ def f1_metric(yt, yp):
 
 
 def main():
-    Xtr, ytr, ctr, Xte, yte, cte = load_all()
+    Xtr, ytr, ctr, Xte, yte, cte, Xva, yva = load_all()
     print("train", Xtr.shape, "test", Xte.shape)
     os.makedirs(OUT_DIR, exist_ok=True)
     rows = []
@@ -157,42 +157,17 @@ def main():
     test = []
     for name, m in [("ours tree reg", ours_reg), ("sklearn tree reg", sk_reg)]:
         p = m.predict(Xte)
+        # Duan smearing: exp(mean log) is biased low, so rescale by the mean
+        # exp-residual measured on VALIDATION (train residuals of a deep tree are ~0)
+        smear = float(np.mean(np.exp(yva - m.predict(Xva))))
+        pa = np.exp(p) * smear
         r = dict(model=name, rmse_log=ev.rmse(yte, p), mae_log=ev.mae(yte, p), r2_log=ev.r2(yte, p),
-                 rmse_azn=ev.rmse(np.exp(yte), np.exp(p)), mae_azn=ev.mae(np.exp(yte), np.exp(p)))
+                 smearing_factor=smear,
+                 rmse_azn=ev.rmse(np.exp(yte), pa), mae_azn=ev.mae(np.exp(yte), pa),
+                 rmse_azn_uncorrected=ev.rmse(np.exp(yte), np.exp(p)),
+                 mae_azn_uncorrected=ev.mae(np.exp(yte), np.exp(p)))
         test.append(r)
         print({k: (round(v, 4) if isinstance(v, float) else v) for k, v in r.items()})
 
     cls_models = [("ours tree cls", ours_cls, Xte, "proba"), ("sklearn tree cls", sk_cls, Xte, "proba"),
-                  ("sklearn sgd", make_pipeline(StandardScaler(), SGDClassifier(
-                      loss="hinge", alpha=SVM_LAMBDA, random_state=SEED)).fit(Xtr, ctr), Xte, "dec"),
-                  ("sklearn linearsvc", make_pipeline(StandardScaler(), LinearSVC(
-                      loss="hinge", C=1.0 / (SVM_LAMBDA * len(Xtr)), dual=True,
-                      max_iter=50_000, random_state=SEED)).fit(Xtr, ctr), Xte, "dec")]
-    if has_svm:
-        from src.svm import PegasosSVM
-        cls_models.insert(2, ("ours svm", PegasosSVM(lambda_=SVM_LAMBDA, random_state=SEED)
-                              .fit(Xs_tr, ctr), Xs_te, "dec"))
-    for name, m, Xb, kind in cls_models:
-        p = m.predict(Xb)
-        sc = m.predict_proba(Xb)[:, 1] if kind == "proba" else m.decision_function(Xb)
-        pr, rc, f1 = ev.precision_recall_f1(cte, p)
-        r = dict(model=name, precision=pr, recall=rc, f1=f1, auc=ev.roc_auc(cte, sc))
-        test.append(r)
-        print({k: (round(v, 4) if isinstance(v, float) else v) for k, v in r.items()})
-    pd.DataFrame(test).to_csv(os.path.join(OUT_DIR, "benchmark_test.csv"), index=False)
-
-    # ---- Problem 5(a): structure / prediction agreement with sklearn ----
-    print("\nSTRUCTURE vs scikit-learn (test set):")
-    struct = []
-    for task, o, s in [("A reg", ours_reg, sk_reg), ("B cls", ours_cls, sk_cls)]:
-        agree = float(np.mean(np.isclose(o.predict(Xte), s.predict(Xte))))
-        r = dict(task=task, ours_depth=o.get_depth(), sk_depth=s.get_depth(),
-                 ours_leaves=o.get_n_leaves(), sk_leaves=s.get_n_leaves(),
-                 identical_predictions=agree)
-        struct.append(r)
-        print(r)
-    pd.DataFrame(struct).to_csv(os.path.join(OUT_DIR, "benchmark_structure.csv"), index=False)
-
-
-if __name__ == "__main__":
-    main()
+                  ("sklearn sgd",
