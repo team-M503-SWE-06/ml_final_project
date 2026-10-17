@@ -27,7 +27,7 @@ import sys
 import numpy as np
 import pandas as pd
 
-from . import data_prep, eda
+from . import data_prep, eda, error_analysis
 from . import evaluate as ev
 from .experiments import benchmark, svm_analysis, svm_sweeps, tree_sweeps
 
@@ -99,6 +99,9 @@ def main() -> None:
 
     _section("7. Benchmark vs scikit-learn (CV on train, one test evaluation)")
     benchmark.main()
+
+    _section("7b. Error analysis (test set)")
+    error_analysis.main()
 
     _section("8. Final results")
     print_results(benchmark.OUT_DIR)
