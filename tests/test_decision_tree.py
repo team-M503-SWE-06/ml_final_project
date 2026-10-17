@@ -312,6 +312,40 @@ def test_leaf_l1_zeroes_small_offsets():
         DecisionTree(criterion="gini", leaf_l1=1.0).fit(X, (y > 5).astype(int))
 
 
+@pytest.mark.parametrize("criterion", ["gini", "mse"])
+def test_cost_complexity_pruning_matches_sklearn(criterion):
+    rng = np.random.default_rng(3)
+    X = rng.normal(size=(300, 5))
+    noise = rng.normal(scale=0.3, size=300)
+    if criterion == "mse":
+        y = np.sin(X[:, 0]) + X[:, 2] + noise
+        ours = dict(task="regression", criterion="mse", min_samples_leaf=5)
+        sk_class = DecisionTreeRegressor
+    else:
+        y = (X[:, 0] + 0.5 * X[:, 1] + noise > 0).astype(int)
+        ours = dict(criterion="gini", min_samples_leaf=5)
+        sk_class = DecisionTreeClassifier
+
+    path = DecisionTree(**ours).cost_complexity_pruning_path(X, y)
+    expected = sk_class(min_samples_leaf=5, random_state=0).cost_complexity_pruning_path(X, y)
+    assert np.allclose(path["ccp_alphas"], expected.ccp_alphas)
+    assert np.allclose(path["impurities"], expected.impurities)
+
+    for alpha in expected.ccp_alphas[[1, len(expected.ccp_alphas) // 2, -2]]:
+        tree = DecisionTree(**ours, ccp_alpha=float(alpha) + 1e-12).fit(X, y)
+        sk = sk_class(min_samples_leaf=5, ccp_alpha=float(alpha) + 1e-12, random_state=0).fit(X, y)
+        assert tree.get_n_leaves() == sk.get_n_leaves()
+        assert np.allclose(tree.predict(X), sk.predict(X))
+        assert np.allclose(tree.feature_importances_, sk.feature_importances_)
+
+
+def test_huge_ccp_alpha_prunes_to_a_single_leaf():
+    X, y = _noisy_data()
+    tree = DecisionTree(criterion="gini", ccp_alpha=10.0).fit(X, y)
+    assert tree.get_n_leaves() == 1
+    assert np.allclose(tree.feature_importances_, 0.0)
+
+
 def test_impurity_values():
     gini = DecisionTree(criterion="gini")
     gini.classes_ = np.array([0, 1])

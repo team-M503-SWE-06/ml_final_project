@@ -19,6 +19,7 @@ scikit-learn is NOT used here; it is only the baseline we compare against.
 from __future__ import annotations
 
 import heapq
+import inspect
 import itertools
 
 import numpy as np
@@ -56,8 +57,10 @@ class DecisionTree:
         max_leaf_nodes: int | None = None,   # grow best-first up to this many leaves
         leaf_l2: float = 0.0,           # L2 shrinkage of leaf values (see _leaf_value)
         leaf_l1: float = 0.0,           # L1 soft-threshold of leaf values (regression)
+        ccp_alpha: float = 0.0,         # cost-complexity pruning strength (0 = no pruning)
         random_state: int = 42,
     ):
+        self.ccp_alpha = ccp_alpha
         self.max_leaf_nodes = max_leaf_nodes
         self.leaf_l2 = leaf_l2
         self.leaf_l1 = leaf_l1
@@ -112,6 +115,8 @@ class DecisionTree:
         if self.leaf_l1 > 0 and self.task == "classification":
             raise ValueError("leaf_l1 applies to regression leaves only; use leaf_l2 to "
                              "smooth class probabilities")
+        if self.ccp_alpha < 0:
+            raise ValueError("ccp_alpha must be >= 0")
 
     def _features_per_split(self, n_features: int) -> int:
         """How many randomly chosen features each split looks at (all of them by default)."""
@@ -382,10 +387,126 @@ class DecisionTree:
         self._n_train = len(y)
         self._importances = np.zeros(X.shape[1])
         self.root = self._grow(X, y)
+        if self.ccp_alpha > 0:
+            self._prune(self.ccp_alpha)
+            self._recompute_importances()
 
         total = self._importances.sum()
         self.feature_importances_ = self._importances / total if total > 0 else self._importances
         return self
+
+    # --- cost-complexity pruning (Breiman et al., CART) -----------------------
+    def _prune(self, alpha: float, path: list | None = None) -> None:
+        """
+        Minimal cost-complexity pruning, the post-pruning sklearn calls ccp_alpha.
+
+        The grown tree T is scored by R_alpha(T) = R(T) + alpha * |leaves(T)|,
+        where R(T) = sum over leaves of (N_t / N) * impurity_t. Collapsing the
+        subtree under node t into one leaf raises R by R(t) - R(T_t) and
+        removes |leaves(T_t)| - 1 leaves, so it pays off once alpha exceeds
+        the node's effective alpha
+
+            g(t) = (R(t) - R(T_t)) / (|leaves(T_t)| - 1).
+
+        We repeatedly collapse the "weakest link" (smallest g) while g <= alpha.
+        Collapsing t only changes g for t's ancestors, so a heap with version
+        numbers keeps this O(n log n) instead of rescanning the tree each time.
+        With `path` given, (g, R(T)) is appended after every collapse.
+        """
+        def risk(node):
+            return node.n_samples / self._n_train * node.impurity
+
+        parent, order, stack = {}, [], [self.root]
+        while stack:                                   # pre-order walk
+            node = stack.pop()
+            order.append(node)
+            if not node.is_leaf():
+                parent[id(node.left)] = parent[id(node.right)] = node
+                stack += [node.right, node.left]
+        leaves, sub_risk = {}, {}                      # |leaves(T_t)|, R(T_t)
+        for node in reversed(order):                   # children before parents
+            if node.is_leaf():
+                leaves[id(node)], sub_risk[id(node)] = 1, risk(node)
+            else:
+                leaves[id(node)] = leaves[id(node.left)] + leaves[id(node.right)]
+                sub_risk[id(node)] = sub_risk[id(node.left)] + sub_risk[id(node.right)]
+
+        def effective_alpha(node):
+            return (risk(node) - sub_risk[id(node)]) / (leaves[id(node)] - 1)
+
+        version, tie, heap = {}, itertools.count(), []
+
+        def push(node):
+            version[id(node)] = version.get(id(node), -1) + 1
+            heapq.heappush(heap, (effective_alpha(node), next(tie), version[id(node)], node))
+
+        for node in order:
+            if not node.is_leaf():
+                push(node)
+        removed = set()                                # nodes inside collapsed subtrees
+        while heap:
+            g, _, v, node = heapq.heappop(heap)
+            if node.is_leaf() or v != version[id(node)] or id(node) in removed:
+                continue
+            if g > alpha:
+                break
+            removed_leaves = leaves[id(node)] - 1
+            added_risk = risk(node) - sub_risk[id(node)]
+            below = [node.left, node.right]
+            while below:
+                child = below.pop()
+                removed.add(id(child))
+                if not child.is_leaf():
+                    below += [child.left, child.right]
+            node.left = node.right = node.feature = node.threshold = None
+            leaves[id(node)], sub_risk[id(node)] = 1, risk(node)
+            ancestor = parent.get(id(node))
+            while ancestor is not None:
+                leaves[id(ancestor)] -= removed_leaves
+                sub_risk[id(ancestor)] += added_risk
+                push(ancestor)
+                ancestor = parent.get(id(ancestor))
+            if path is not None:
+                path.append((g, sub_risk[id(self.root)]))
+
+    def _recompute_importances(self) -> None:
+        """Impurity-decrease importances of the internal nodes that survived pruning."""
+        self._importances = np.zeros(self.n_features_in_)
+        stack = [self.root]
+        while stack:
+            node = stack.pop()
+            if node.is_leaf():
+                continue
+            self._importances[node.feature] += (
+                node.n_samples * node.impurity - node.left.n_samples * node.left.impurity
+                - node.right.n_samples * node.right.impurity)
+            stack += [node.left, node.right]
+
+    def cost_complexity_pruning_path(self, X, y) -> dict:
+        """
+        The weakest-link pruning sequence of the fully grown tree (same
+        parameters, ccp_alpha ignored), like sklearn's method of the same name:
+        {"ccp_alphas": effective alphas in increasing order, starting at 0,
+         "impurities": total leaf impurity R(T) of the tree after each step}.
+        Pick ccp_alpha from these values with validation data.
+        """
+        params = {name: getattr(self, name) for name in inspect.signature(DecisionTree).parameters}
+        params["ccp_alpha"] = 0.0
+        full = DecisionTree(**params).fit(X, y)
+        path = [(0.0, sum(full._leaf_risks()))]
+        full._prune(np.inf, path)
+        alphas, impurities = zip(*path)
+        return {"ccp_alphas": np.array(alphas), "impurities": np.array(impurities)}
+
+    def _leaf_risks(self) -> list[float]:
+        out, stack = [], [self.root]
+        while stack:
+            node = stack.pop()
+            if node.is_leaf():
+                out.append(node.n_samples / self._n_train * node.impurity)
+            else:
+                stack += [node.left, node.right]
+        return out
 
     def _check_fitted(self) -> None:
         if self.root is None:
