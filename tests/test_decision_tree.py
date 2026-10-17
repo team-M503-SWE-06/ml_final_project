@@ -241,6 +241,77 @@ def test_constant_large_targets_form_a_pure_node():
     assert tree.feature_importances_[1:].sum() == 0.0
 
 
+def test_max_features_subsamples_features_reproducibly():
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(500, 20))
+    y = (X[:, 0] + X[:, 1] > 0).astype(int)
+    full = DecisionTree(max_depth=6).fit(X, y)
+    assert (DecisionTree(max_depth=6, max_features=20).fit(X, y).predict(X) == full.predict(X)).all()
+    a = DecisionTree(max_depth=6, max_features="sqrt", random_state=1).fit(X, y)
+    b = DecisionTree(max_depth=6, max_features="sqrt", random_state=1).fit(X, y)
+    c = DecisionTree(max_depth=6, max_features="sqrt", random_state=2).fit(X, y)
+    assert a._k_features == 4
+    assert _same_structure(a, b) and not _same_structure(a, c)
+    X_const = np.column_stack([np.zeros(100), np.zeros(100), rng.normal(size=100)])
+    y_const = (X_const[:, 2] > 0).astype(int)
+    assert DecisionTree(max_features=1, random_state=0).fit(X_const, y_const).get_n_leaves() == 2
+    with pytest.raises(ValueError):
+        DecisionTree(max_features=1.5).fit(X, y)
+
+
+def _same_structure(a, b):
+    return all(n1[0] == n2[0] and n1[1] == n2[1] for n1, n2 in zip(_ours(a), _ours(b))) \
+        and len(_ours(a)) == len(_ours(b))
+
+
+@pytest.mark.parametrize("criterion", ["gini", "mse"])
+def test_best_first_growth_matches_sklearn(criterion):
+    rng = np.random.default_rng(3)
+    X = rng.normal(size=(300, 5))
+    noise = rng.normal(scale=0.3, size=300)
+    if criterion == "mse":
+        y = np.sin(X[:, 0]) + X[:, 2] + noise
+        ours = DecisionTree(task="regression", criterion="mse", max_leaf_nodes=8)
+        make = lambda s: DecisionTreeRegressor(max_leaf_nodes=8, random_state=s)
+    else:
+        y = (X[:, 0] + 0.5 * X[:, 1] + noise > 0).astype(int)
+        ours = DecisionTree(criterion="gini", max_leaf_nodes=8)
+        make = lambda s: DecisionTreeClassifier(max_leaf_nodes=8, random_state=s)
+    ours.fit(X, y)
+    expected = make(0).fit(X, y)
+    assert ours.get_n_leaves() == expected.get_n_leaves() == 8
+    assert np.allclose(ours.predict(X), expected.predict(X))
+
+
+def test_leaf_l2_shrinks_values_towards_the_training_answer():
+    X = np.arange(10, dtype=float)[:, None]
+    y = np.array([0, 0, 0, 0, 0, 0, 0, 1, 1, 1])
+    stump = DecisionTree(criterion="gini", max_depth=1, leaf_l2=2.0).fit(X, y)
+    prior = np.array([0.7, 0.3])
+    assert np.allclose(stump.root.left.value, (np.array([7, 0]) + 2.0 * prior) / (7 + 2.0))
+    assert np.allclose(stump.predict_proba(X).sum(axis=1), 1.0)
+
+    y_reg = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 9.0, 9.0, 9.0])
+    tree = DecisionTree(task="regression", criterion="mse", max_depth=1, leaf_l2=3.0).fit(X, y_reg)
+    mean = y_reg.mean()
+    assert tree.root.right.value == pytest.approx(mean + 3 * (9.0 - mean) / (3 + 3.0))
+    plain = DecisionTree(task="regression", criterion="mse", max_depth=1).fit(X, y_reg)
+    assert abs(tree.root.right.value - mean) < abs(plain.root.right.value - mean)
+
+
+def test_leaf_l1_zeroes_small_offsets():
+    X = np.arange(10, dtype=float)[:, None]
+    y = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 9.0, 9.0, 9.0])
+    mean = y.mean()
+    tree = DecisionTree(task="regression", criterion="mse", max_depth=1, leaf_l1=100.0).fit(X, y)
+    assert np.allclose(tree.predict(X), mean)
+    soft = DecisionTree(task="regression", criterion="mse", max_depth=1, leaf_l1=6.0).fit(X, y)
+    g_right = 3 * (9.0 - mean)
+    assert soft.root.right.value == pytest.approx(mean + (g_right - 6.0) / 3)
+    with pytest.raises(ValueError):
+        DecisionTree(criterion="gini", leaf_l1=1.0).fit(X, (y > 5).astype(int))
+
+
 def test_impurity_values():
     gini = DecisionTree(criterion="gini")
     gini.classes_ = np.array([0, 1])

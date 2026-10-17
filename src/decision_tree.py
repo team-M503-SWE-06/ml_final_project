@@ -18,6 +18,9 @@ scikit-learn is NOT used here; it is only the baseline we compare against.
 
 from __future__ import annotations
 
+import heapq
+import itertools
+
 import numpy as np
 
 CLASSIFICATION_CRITERIA = ("gini", "entropy")
@@ -49,14 +52,22 @@ class DecisionTree:
         min_samples_split: int = 2,
         min_samples_leaf: int = 1,
         min_impurity_decrease: float = 0.0,
+        max_features=None,              # None | int | float in (0, 1] | "sqrt" | "log2"
+        max_leaf_nodes: int | None = None,   # grow best-first up to this many leaves
+        leaf_l2: float = 0.0,           # L2 shrinkage of leaf values (see _leaf_value)
+        leaf_l1: float = 0.0,           # L1 soft-threshold of leaf values (regression)
         random_state: int = 42,
     ):
+        self.max_leaf_nodes = max_leaf_nodes
+        self.leaf_l2 = leaf_l2
+        self.leaf_l1 = leaf_l1
         self.task = task
         self.criterion = criterion
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
         self.min_samples_leaf = min_samples_leaf
         self.min_impurity_decrease = min_impurity_decrease
+        self.max_features = max_features
         self.random_state = random_state
         self.root: Node | None = None
         self.classes_ = None      # original class labels (classification only)
@@ -87,6 +98,35 @@ class DecisionTree:
             raise ValueError("min_samples_leaf must be >= 1")
         if self.min_impurity_decrease < 0:
             raise ValueError("min_impurity_decrease must be >= 0")
+        mf = self.max_features
+        if not (mf is None or mf in ("sqrt", "log2")
+                or (isinstance(mf, (int, np.integer)) and not isinstance(mf, bool) and mf >= 1)
+                or (isinstance(mf, float) and 0.0 < mf <= 1.0)):
+            raise ValueError("max_features must be None, 'sqrt', 'log2', an int >= 1 "
+                             f"or a float in (0, 1], got {mf!r}")
+        mln = self.max_leaf_nodes
+        if mln is not None and (not isinstance(mln, (int, np.integer)) or mln < 2):
+            raise ValueError(f"max_leaf_nodes must be None or an integer >= 2, got {mln!r}")
+        if self.leaf_l2 < 0 or self.leaf_l1 < 0:
+            raise ValueError("leaf_l2 and leaf_l1 must be >= 0")
+        if self.leaf_l1 > 0 and self.task == "classification":
+            raise ValueError("leaf_l1 applies to regression leaves only; use leaf_l2 to "
+                             "smooth class probabilities")
+
+    def _features_per_split(self, n_features: int) -> int:
+        """How many randomly chosen features each split looks at (all of them by default)."""
+        mf = self.max_features
+        if mf is None:
+            k = n_features
+        elif mf == "sqrt":
+            k = int(np.sqrt(n_features))
+        elif mf == "log2":
+            k = int(np.log2(n_features))
+        elif isinstance(mf, float):
+            k = int(mf * n_features)
+        else:
+            k = mf
+        return min(max(k, 1), n_features)
 
     # --- impurity -----------------------------------------------------------
     def _impurity_from_counts(self, counts):
@@ -109,10 +149,31 @@ class DecisionTree:
         return float(np.mean((y - y.mean()) ** 2))
 
     def _leaf_value(self, y):
-        """Class frequencies (-> majority vote and predict_proba) or the mean target."""
+        """
+        Class frequencies (-> majority vote and predict_proba) or the mean target.
+
+        Optional L1/L2 regularisation of the value (the split search is not
+        affected). It pulls small leaves towards the training-set answer, so a
+        leaf with 3 rows cannot make an extreme prediction on its own:
+          - regression, with G = sum(y - y_train_mean) over the leaf's rows:
+                value = y_train_mean + sign(G) * max(|G| - leaf_l1, 0) / (n + leaf_l2)
+            (the XGBoost leaf formula for squared loss: L2 shrinks the leaf's
+            offset, L1 sets small offsets to exactly zero);
+          - classification: (counts + leaf_l2 * prior) / (n + leaf_l2), i.e.
+            probabilities smoothed towards the training class frequencies.
+        With leaf_l2 = leaf_l1 = 0 this is the plain frequency / mean.
+        """
+        n = len(y)
         if self.task == "classification":
-            return np.bincount(y, minlength=len(self.classes_)) / len(y)
-        return float(y.mean())
+            counts = np.bincount(y, minlength=len(self.classes_))
+            if self.leaf_l2 == 0:
+                return counts / n
+            return (counts + self.leaf_l2 * self._prior) / (n + self.leaf_l2)
+        if self.leaf_l2 == 0 and self.leaf_l1 == 0:
+            return float(y.mean())
+        g = float(np.sum(y - self._y_train_mean))
+        g = np.sign(g) * max(abs(g) - self.leaf_l1, 0.0)
+        return float(self._y_train_mean + g / (n + self.leaf_l2))
 
     @staticmethod
     def _is_pure(y, impurity: float) -> bool:
@@ -125,6 +186,25 @@ class DecisionTree:
         return impurity <= EPSILON or bool(np.all(y == y[0]))
 
     def _best_split(self, X, y):
+        """
+        Best split of this node over all features, or over a random subset of
+        max_features of them (the Random Forest trick that decorrelates trees).
+        Like sklearn, if none of the drawn features has a valid split, the
+        remaining features are searched too, so the subset never forces an
+        early leaf. Returns (feature, threshold, gain) or None.
+        """
+        n_features = X.shape[1]
+        if self._k_features >= n_features:
+            return self._search_split(X, y)
+        order = self._rng.permutation(n_features)
+        for cols in (np.sort(order[:self._k_features]), np.sort(order[self._k_features:])):
+            split = self._search_split(X[:, cols], y)
+            if split is not None:
+                feature, threshold, gain = split
+                return int(cols[feature]), threshold, gain
+        return None
+
+    def _search_split(self, X, y):
         """
         Search every feature and every candidate threshold of this node at once.
 
@@ -218,24 +298,54 @@ class DecisionTree:
         depth) instead of Python function calls, so a very deep tree
         (max_depth=None on chain-like data) cannot hit Python's recursion limit
         of ~1000, and children get row indices instead of copies of X.
+
+        With max_leaf_nodes set the tree grows best-first instead (as sklearn
+        does): the frontier is a priority queue and the leaf whose best split
+        removes the most impurity (N_t * gain) is split next, wherever it is,
+        until the tree has max_leaf_nodes leaves.
         """
         root = self._new_node(y)
-        stack = [(root, np.arange(len(y)), 0)]
+        all_rows = np.arange(len(y))
+        if self.max_leaf_nodes is not None:
+            return self._grow_best_first(X, y, root, all_rows)
+
+        stack = [(root, all_rows, 0)]
         while stack:
             node, rows, depth = stack.pop()
-            X_node, y_node = X[rows], y[rows]
-            split = self._choose_split(X_node, y_node, node, depth)
+            split = self._choose_split(X[rows], y[rows], node, depth)
             if split is None:
                 continue
-            feature, threshold, gain = split
-            node.feature, node.threshold = feature, threshold
-            self._importances[feature] += node.n_samples * gain   # = N_t*I_t - N_L*I_L - N_R*I_R
-            go_left = X_node[:, feature] <= threshold
-            node.left = self._new_node(y_node[go_left])
-            node.right = self._new_node(y_node[~go_left])
-            stack.append((node.right, rows[~go_left], depth + 1))
-            stack.append((node.left, rows[go_left], depth + 1))
+            (left, left_rows), (right, right_rows) = self._apply_split(X, y, node, rows, split)
+            stack.append((right, right_rows, depth + 1))
+            stack.append((left, left_rows, depth + 1))
         return root
+
+    def _grow_best_first(self, X, y, root: Node, all_rows) -> Node:
+        heap, tie = [], itertools.count()     # tie: equal priorities pop in creation order
+
+        def push(node, rows, depth):
+            split = self._choose_split(X[rows], y[rows], node, depth)
+            if split is not None:
+                heapq.heappush(heap, (-node.n_samples * split[2], next(tie), node, rows, depth, split))
+
+        push(root, all_rows, 0)
+        n_leaves = 1
+        while heap and n_leaves < self.max_leaf_nodes:
+            _, _, node, rows, depth, split = heapq.heappop(heap)
+            for child, child_rows in self._apply_split(X, y, node, rows, split):
+                push(child, child_rows, depth + 1)
+            n_leaves += 1
+        return root
+
+    def _apply_split(self, X, y, node: Node, rows, split):
+        """Turn `node` into an internal node; return (child, child_rows) for both sides."""
+        feature, threshold, gain = split
+        node.feature, node.threshold = feature, threshold
+        self._importances[feature] += node.n_samples * gain   # = N_t*I_t - N_L*I_L - N_R*I_R
+        go_left = X[rows, feature] <= threshold
+        left_rows, right_rows = rows[go_left], rows[~go_left]
+        node.left, node.right = self._new_node(y[left_rows]), self._new_node(y[right_rows])
+        return (node.left, left_rows), (node.right, right_rows)
 
     def fit(self, X, y):
         """Build the tree from X (n_samples, n_features) and y. Returns self."""
@@ -262,7 +372,13 @@ class DecisionTree:
             y = y.astype(float)
             if not np.isfinite(y).all():
                 raise ValueError("y contains NaN or inf")
+        if self.task == "classification":
+            self._prior = np.bincount(y, minlength=len(self.classes_)) / len(y)
+        else:
+            self._y_train_mean = float(y.mean())
         self.n_features_in_ = X.shape[1]
+        self._k_features = self._features_per_split(X.shape[1])
+        self._rng = np.random.default_rng(self.random_state)   # only used with max_features
         self._n_train = len(y)
         self._importances = np.zeros(X.shape[1])
         self.root = self._grow(X, y)
