@@ -12,6 +12,9 @@ import os
 import time
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -22,6 +25,7 @@ from sklearn.svm import LinearSVC, SVC
 from src import data_prep
 from src import evaluate as ev
 from src.decision_tree import DecisionTree
+from src.importance import one_hot_groups
 
 SEED = data_prep.SEED
 TREE_REG_PARAMS = dict(min_samples_split=75)                       # no depth limit
@@ -30,20 +34,27 @@ SVM_LAMBDA = 1e-3
 SVC_SUBSAMPLE = 10_000          # SVC is O(n^2): RBF SVC runs on a train subsample
 N_FOLDS = 5
 OUT_DIR = os.path.join("report", "tables")
+FIG_DIR = os.path.join("report", "figures")
+TOP_FEATURES = 10
 
 
-def load_all():
-    """Train/val/test with the same leakage-safe steps as tree_sweeps.load_splits."""
+def load_all(return_names=False):
+    """Train/val/test with the same leakage-safe steps as tree_sweeps.load_splits.
+
+    return_names=True also returns the feature names (for the importances).
+    """
     df = data_prep.clean(data_prep.load_raw())
     y_all = np.log(df["price"].to_numpy(dtype=float))
     itr, iva, ite = data_prep.split_indices(y_all, seed=SEED)
     fit_mask = np.zeros(len(df), dtype=bool)
     fit_mask[itr] = True
-    X, y, _ = data_prep.make_features(df, fit_mask=fit_mask)
+    X, y, names = data_prep.make_features(df, fit_mask=fit_mask)
     Xtr, Xte, Xva = data_prep.impute_median(X[itr], X[ite], X[iva])
     ytr, yte, yva = y[itr], y[ite], y[iva]
     tier_tr, thr = data_prep.make_tier_label(ytr)
     tier_te, _ = data_prep.make_tier_label(yte, threshold=thr)
+    if return_names:
+        return Xtr, ytr, tier_tr, Xte, yte, tier_te, Xva, yva, names
     return Xtr, ytr, tier_tr, Xte, yte, tier_te, Xva, yva
 
 
@@ -93,8 +104,52 @@ def f1_metric(yt, yp):
     return ev.precision_recall_f1(yt, yp)[2]
 
 
+def tree_importances(models, names):
+    """MDI (impurity decrease on train) of the final trees, one-hot columns summed per feature."""
+    groups = one_hot_groups(names)
+    rows = []
+    for task, model in models:
+        imp = model.feature_importances_
+        shares = {g: float(imp[cols].sum()) for g, cols in groups.items()}
+        ranked = sorted(shares.items(), key=lambda kv: -kv[1])
+        for rank, (feature, share) in enumerate(ranked, 1):
+            rows.append(dict(task=task, rank=rank, feature=feature, mdi=share))
+    pd.DataFrame(rows).to_csv(os.path.join(OUT_DIR, "tree_importance.csv"), index=False)
+
+    fig, axes = plt.subplots(1, len(models), figsize=(5.5 * len(models), 4))
+    for ax, (task, _) in zip(np.atleast_1d(axes), models):
+        top = [r for r in rows if r["task"] == task][:TOP_FEATURES][::-1]
+        ax.barh([r["feature"] for r in top], [r["mdi"] for r in top], color="#1f77b4")
+        ax.set_xlabel("impurity decrease share (train)")
+        ax.set_title(f"Our tree, {task}: top {TOP_FEATURES} features")
+        ax.grid(axis="x", alpha=.3)
+    fig.tight_layout()
+    fig.savefig(os.path.join(FIG_DIR, "tree_importance.png"), dpi=200)
+    plt.close(fig)
+    return rows
+
+
+def plot_confusion(results):
+    """Test-set confusion matrices [[TN, FP], [FN, TP]] of the Task B models."""
+    fig, axes = plt.subplots(1, len(results), figsize=(3.2 * len(results), 3.2))
+    for ax, (name, cm) in zip(np.atleast_1d(axes), results):
+        ax.imshow(cm, cmap="Blues")
+        for i in range(2):
+            for j in range(2):
+                ax.text(j, i, f"{cm[i, j]:,}", ha="center", va="center",
+                        color="white" if cm[i, j] > cm.max() / 2 else "black")
+        ax.set_xticks([0, 1], ["standard", "premium"])
+        ax.set_yticks([0, 1], ["standard", "premium"])
+        ax.set_xlabel("predicted")
+        ax.set_ylabel("true")
+        ax.set_title(name, fontsize=10)
+    fig.tight_layout()
+    fig.savefig(os.path.join(FIG_DIR, "confusion_matrices.png"), dpi=200)
+    plt.close(fig)
+
+
 def main():
-    Xtr, ytr, ctr, Xte, yte, cte, Xva, yva = load_all()
+    Xtr, ytr, ctr, Xte, yte, cte, Xva, yva, names = load_all(return_names=True)
     print("train", Xtr.shape, "test", Xte.shape)
     os.makedirs(OUT_DIR, exist_ok=True)
     rows = []
@@ -182,11 +237,15 @@ def main():
         from src.svm import PegasosSVM
         ours_svm = PegasosSVM(lambda_=SVM_LAMBDA, random_state=SEED).fit(Xs_tr, ctr)
         cls_models.insert(2, ("ours svm", ours_svm, Xs_te, "dec"))
+    confusion = []
     for name, m, Xb, kind in cls_models:
         p = m.predict(Xb)
         sc = m.predict_proba(Xb)[:, 1] if kind == "proba" else m.decision_function(Xb)
         pr, rc, f1 = ev.precision_recall_f1(cte, p)
-        r = dict(model=name, precision=pr, recall=rc, f1=f1, auc=ev.roc_auc(cte, sc))
+        cm = ev.confusion_matrix(cte, p)
+        confusion.append((name, cm))
+        r = dict(model=name, precision=pr, recall=rc, f1=f1, auc=ev.roc_auc(cte, sc),
+                 tn=int(cm[0, 0]), fp=int(cm[0, 1]), fn=int(cm[1, 0]), tp=int(cm[1, 1]))
         test.append(r)
         print({k: (round(v, 4) if isinstance(v, float) else v) for k, v in r.items()})
     pd.DataFrame(test).to_csv(os.path.join(OUT_DIR, "benchmark_test.csv"), index=False)
@@ -202,6 +261,14 @@ def main():
         struct.append(r)
         print(r)
     pd.DataFrame(struct).to_csv(os.path.join(OUT_DIR, "benchmark_structure.csv"), index=False)
+
+    os.makedirs(FIG_DIR, exist_ok=True)
+    plot_confusion(confusion)
+    print("\nTREE FEATURE IMPORTANCE (MDI on train, final trees, one-hot summed):")
+    imp = tree_importances([("Task A", ours_reg), ("Task B", ours_cls)], names)
+    for task in ("Task A", "Task B"):
+        top = [r for r in imp if r["task"] == task][:5]
+        print(f"  {task}: " + ", ".join(f"{r['feature']} {r['mdi']:.3f}" for r in top))
 
 
 if __name__ == "__main__":
