@@ -9,10 +9,12 @@ Steps:
   2. framing + frozen stratified train/val/test split (data/split_indices.npz),
   3. EDA figures,
   4. tree sweeps: criterion, max_depth, min_samples_leaf  (validation only),
+  4b. final tree configs: joint grid on validation + 5-fold CV on train,
   5. SVM sweeps: lambda, RFF bandwidth, objective curve  (validation only),
   6. SVM analysis: weights, epochs/schedule, matched sklearn comparison,
   7. benchmark vs scikit-learn: 5-fold CV mean ± std, timings, one test-set
-     evaluation, tree structure comparison,
+     evaluation, tree structure comparison, confusion matrices, tree
+     feature importances,
   8. final results table.
 
 Figures go to report/figures/, tables (CSV) to report/tables/. Every random
@@ -30,6 +32,7 @@ import pandas as pd
 from . import data_prep, eda, error_analysis
 from . import evaluate as ev
 from .experiments import benchmark, svm_analysis, svm_sweeps, tree_sweeps
+from .experiments import tree_tuning
 
 
 def _section(title: str) -> None:
@@ -91,6 +94,9 @@ def main() -> None:
     _section("4. Decision tree sweeps (validation)")
     tree_sweeps.main()
 
+    _section("4b. Final tree configs (validation grid + 5-fold CV on train)")
+    tree_tuning.main()
+
     _section("5. SVM sweeps (validation)")
     svm_sweeps.main()
 
@@ -124,6 +130,14 @@ def print_results(table_dir: str) -> None:
     print("\nTask B, test set (premium = positive class):")
     ev.compare({m: r[["precision", "recall", "f1", "auc"]].to_dict()
                 for m, r in cls.iterrows()})
+    print("\nTask B, test confusion matrices [[TN, FP], [FN, TP]]:")
+    for m, r in cls.iterrows():
+        print(f"  {m:20s} [[{int(r.tn):5d}, {int(r.fp):5d}], [{int(r.fn):5d}, {int(r.tp):5d}]]")
+
+    imp = pd.read_csv(os.path.join(table_dir, "tree_importance.csv"))
+    print("\nOur tree, top 5 features (MDI on train, one-hot summed):")
+    for task, g in imp.groupby("task"):
+        print(f"  {task}: " + ", ".join(f"{r.feature} {r.mdi:.3f}" for r in g.head(5).itertuples()))
 
 
 if __name__ == "__main__":
