@@ -68,3 +68,19 @@ python -m pytest -q
 ```
 The tree tests compare our splits node by node with scikit-learn on small
 examples that have no tied splits.
+
+## Beyond the core tree (Problem 9 bonus and extras)
+All built on our own `DecisionTree`, no library models:
+- `DecisionTree(max_features=...)`: random feature subset per split (for forests).
+- `DecisionTree(max_leaf_nodes=...)`: best-first growth.
+- `DecisionTree(ccp_alpha=...)`, `.cost_complexity_pruning_path()`, `.prune()`:
+  minimal cost-complexity pruning (matches scikit-learn's).
+- `DecisionTree(leaf_l2=..., leaf_l1=...)`: L2 / L1 regularisation of leaf values.
+- `src/ensemble.py`: `RandomForest` (both tasks, OOB score) and
+  `GradientBoostingRegressor` (shrinkage, subsample, leaf L2 / L1).
+- `src/importance.py`: permutation importance on held-out data (one-hot and
+  missing-flag columns shuffled as groups).
+
+`python -m src.experiments.ensembles` (also step 8 of `run_all`) tunes these on
+validation and writes `report/tables/{pruning_path,best_first,leaf_regularisation,forest,boosting,importance_mdi_vs_permutation}.csv`
+and `report/figures/{pruning_alpha,ensemble_error_vs_learners,importance_mdi_vs_permutation}.png`.

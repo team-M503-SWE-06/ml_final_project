@@ -13,7 +13,10 @@ Steps:
   6. SVM analysis: weights, epochs/schedule, matched sklearn comparison,
   7. benchmark vs scikit-learn: 5-fold CV mean ± std, timings, one test-set
      evaluation, tree structure comparison,
-  8. final results table.
+  8. tree extras (validation): cost-complexity pruning, best-first growth,
+     L1/L2 leaf regularisation, our Random Forest and gradient boosting with
+     error-vs-learners curves (Problem 9 bonus), permutation importance vs MDI,
+  9. final results table.
 
 Figures go to report/figures/, tables (CSV) to report/tables/. Every random
 step is seeded (data_prep.SEED), so reruns give the same numbers.
@@ -29,7 +32,7 @@ import pandas as pd
 
 from . import data_prep, eda
 from . import evaluate as ev
-from .experiments import benchmark, svm_analysis, svm_sweeps, tree_sweeps
+from .experiments import benchmark, ensembles, svm_analysis, svm_sweeps, tree_sweeps
 
 
 def _section(title: str) -> None:
@@ -100,7 +103,10 @@ def main() -> None:
     _section("7. Benchmark vs scikit-learn (CV on train, one test evaluation)")
     benchmark.main()
 
-    _section("8. Final results")
+    _section("8. Pruning, best-first, L1/L2 leaves, ensembles, permutation importance")
+    ensembles.main()
+
+    _section("9. Final results")
     print_results(benchmark.OUT_DIR)
 
 

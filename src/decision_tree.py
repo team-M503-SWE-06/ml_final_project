@@ -469,6 +469,22 @@ class DecisionTree:
             if path is not None:
                 path.append((g, sub_risk[id(self.root)]))
 
+    def prune(self, alpha: float):
+        """
+        Prune this fitted tree in place with cost-complexity strength `alpha`
+        (same result as fitting with ccp_alpha=alpha). Pruning a deep copy of
+        one grown tree at several alphas is much cheaper than refitting.
+        """
+        self._check_fitted()
+        if alpha < 0:
+            raise ValueError("alpha must be >= 0")
+        self._prune(alpha)
+        self._recompute_importances()
+        total = self._importances.sum()
+        self.feature_importances_ = self._importances / total if total > 0 else self._importances
+        self.ccp_alpha = alpha
+        return self
+
     def _recompute_importances(self) -> None:
         """Impurity-decrease importances of the internal nodes that survived pruning."""
         self._importances = np.zeros(self.n_features_in_)

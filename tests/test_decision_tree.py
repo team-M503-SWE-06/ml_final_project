@@ -339,6 +339,18 @@ def test_cost_complexity_pruning_matches_sklearn(criterion):
         assert np.allclose(tree.feature_importances_, sk.feature_importances_)
 
 
+def test_prune_in_place_equals_fitting_with_ccp_alpha():
+    import copy
+    X, y = _noisy_data()
+    full = DecisionTree(criterion="gini", min_samples_leaf=3).fit(X, y)
+    alpha = float(full.cost_complexity_pruning_path(X, y)["ccp_alphas"][10]) + 1e-12
+    pruned = copy.deepcopy(full).prune(alpha)
+    fitted = DecisionTree(criterion="gini", min_samples_leaf=3, ccp_alpha=alpha).fit(X, y)
+    assert _same_structure(pruned, fitted)
+    assert np.allclose(pruned.feature_importances_, fitted.feature_importances_)
+    assert full.get_n_leaves() > pruned.get_n_leaves()
+
+
 def test_huge_ccp_alpha_prunes_to_a_single_leaf():
     X, y = _noisy_data()
     tree = DecisionTree(criterion="gini", ccp_alpha=10.0).fit(X, y)
